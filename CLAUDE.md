@@ -16,12 +16,15 @@ Proprioceptive data collection and diffusion policy for dexterous manipulation.
 - [x] ESP32 firmware written
 - [x] Python data collection pipeline written
 - [x] Diffusion policy scaffolding written
-- [x] ARKit iPhone app implemented (ios/StackCapture)
+- [x] ARKit iPhone app implemented & tested (ios/StackCapture)
 - [x] Python iPhone session loader (stack/data/iphone_loader.py)
+- [x] Visualization tools (stack/viz/)
+- [x] iPhone capture verified: 60 FPS, 0% dropped frames
+- [x] Orientation confirmed correct for horizontal mount (power button up)
 - [ ] **IN PROGRESS:** Printing finger joints, testing fit
 - [ ] Printing palm, testing MCP joint
 - [ ] Full glove assembly
-- [ ] Build & test iPhone app on device
+- [ ] Encoder + iPhone timestamp alignment
 
 ## Key Differentiator
 UMI-FT captures: **pose (7D) + gripper width (1D) = 8D**
@@ -29,12 +32,13 @@ Stack captures: **pose (7D) + 4 joint angles (4D) = 11D**
 
 This richer proprioception could enable learning more dexterous behaviors.
 
-## Project Structure (Updated 2026-01-31)
+## Project Structure (Updated 2026-02-01)
 
 ```
 stack/
 ├── stack/                  # Main Python package
-│   ├── data/               # Encoder communication, dataset loading
+│   ├── data/               # Encoder communication, dataset loading, iPhone loader
+│   ├── viz/                # Visualization tools
 │   ├── policy/             # Diffusion policy (Chi et al.)
 │   └── scripts/            # CLI: collect, train, eval
 ├── ios/                    # iPhone ARKit app
@@ -85,9 +89,10 @@ stack-eval --checkpoint outputs/checkpoint_0100.pt
 - `hardware/DESIGN.md` - Full gripper design documentation
 - `stack/data/encoder.py` - ESP32 serial communication
 - `stack/data/iphone_loader.py` - iPhone session loading
+- `stack/viz/iphone_viz.py` - Session visualization tools
 - `stack/policy/diffusion.py` - Diffusion policy implementation
 - `firmware/encoder_reader/encoder_reader.ino` - ESP32 firmware
-- `ios/StackCapture/` - iPhone ARKit data collection app
+- `ios/StackCapture/` - iPhone ARKit data collection app (60 FPS, LiDAR depth)
 - `configs/default.yaml` - Training configuration
 
 ## References
@@ -110,6 +115,16 @@ Cornelius graduates May 2026 and needs a job before then. Sunday Robotics reject
 Don't wait until end of session - update as we go.
 
 ## Session Log
+
+### 2026-02-01 (Saturday)
+- Implemented iOS ARKit capture app (StackCapture)
+- Fixed CVPixelBuffer recycling issue (immediate JPEG encoding)
+- Achieved 60 FPS capture with 0% dropped frames
+- Depth is Float32 (not Float16 as initially assumed)
+- USB file transfer via Finder enabled (much faster than AirDrop)
+- Visualization tools created (frame browser, 3D trajectory, depth colorization)
+- Confirmed image orientation correct for horizontal phone mount (power button up)
+- **Blockers:** Glove assembly (hardware), GPU for training
 
 ### 2026-01-31 (Friday evening)
 - Cornelius bought a Bambu Lab P1S printer (no longer need EPIC)
