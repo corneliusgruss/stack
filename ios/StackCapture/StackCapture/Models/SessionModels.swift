@@ -1,18 +1,19 @@
 import Foundation
 import simd
+import CoreVideo
 
 // MARK: - Pose Frame
 
 struct PoseFrame: Codable {
     let timestamp: Double
     let rgbIndex: UInt64
-    let depthIndex: UInt64?
+    let depth: Float?  // Single-point LiDAR depth (meters) — virtual ToF sensor
     let transform: [[Float]]  // 4x4 row-major
 
-    init(timestamp: Double, rgbIndex: UInt64, depthIndex: UInt64?, transform: simd_float4x4) {
+    init(timestamp: Double, rgbIndex: UInt64, depth: Float?, transform: simd_float4x4) {
         self.timestamp = timestamp
         self.rgbIndex = rgbIndex
-        self.depthIndex = depthIndex
+        self.depth = depth
         self.transform = Self.toRowMajor(transform)
     }
 
@@ -27,6 +28,26 @@ struct PoseFrame: Codable {
     }
 }
 
+// MARK: - Encoder Reading
+
+struct EncoderReading: Codable {
+    let timestamp: Double       // iPhone timestamp (Date().timeIntervalSince1970)
+    let espTimestampMs: UInt32  // ESP32 millis()
+    let indexMcp: Float
+    let indexPip: Float
+    let threeFingerMcp: Float
+    let threeFingerPip: Float
+
+    enum CodingKeys: String, CodingKey {
+        case timestamp
+        case espTimestampMs = "esp_timestamp_ms"
+        case indexMcp = "index_mcp"
+        case indexPip = "index_pip"
+        case threeFingerMcp = "three_finger_mcp"
+        case threeFingerPip = "three_finger_pip"
+    }
+}
+
 // MARK: - Session Metadata
 
 struct SessionMetadata: Codable {
@@ -35,34 +56,37 @@ struct SessionMetadata: Codable {
     let startTime: Date
     let endTime: Date?
     let rgbResolution: [Int]  // [width, height]
-    let depthResolution: [Int]  // [width, height]
     let rgbFrameCount: UInt64
-    let depthFrameCount: UInt64
     let poseCount: UInt64
     let durationSeconds: Double?
+    let encoderCount: Int?
+    let bleConnected: Bool?
+    let hasVideo: Bool?
 
     init(
         deviceModel: String = "",
         iosVersion: String = "",
         startTime: Date = Date(),
         endTime: Date? = nil,
-        rgbResolution: [Int] = [1920, 1440],
-        depthResolution: [Int] = [256, 192],
+        rgbResolution: [Int] = [480, 360],
         rgbFrameCount: UInt64 = 0,
-        depthFrameCount: UInt64 = 0,
         poseCount: UInt64 = 0,
-        durationSeconds: Double? = nil
+        durationSeconds: Double? = nil,
+        encoderCount: Int? = nil,
+        bleConnected: Bool? = nil,
+        hasVideo: Bool? = nil
     ) {
         self.deviceModel = deviceModel
         self.iosVersion = iosVersion
         self.startTime = startTime
         self.endTime = endTime
         self.rgbResolution = rgbResolution
-        self.depthResolution = depthResolution
         self.rgbFrameCount = rgbFrameCount
-        self.depthFrameCount = depthFrameCount
         self.poseCount = poseCount
         self.durationSeconds = durationSeconds
+        self.encoderCount = encoderCount
+        self.bleConnected = bleConnected
+        self.hasVideo = hasVideo
     }
 }
 
@@ -103,9 +127,10 @@ struct SessionInfo: Identifiable {
 struct FrameData {
     let timestamp: Double
     let rgbIndex: UInt64
-    let depthIndex: UInt64?
+    let depth: Float?  // Single-point depth from LiDAR center
     let transform: simd_float4x4
     // Already-encoded data (copied immediately to avoid ARKit buffer recycling)
     let jpegData: Data
-    let depthData: Data?
+    // Full-resolution pixel buffer for video recording (retained)
+    let pixelBuffer: CVPixelBuffer?
 }

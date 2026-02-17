@@ -1,40 +1,22 @@
 import SwiftUI
 import ARKit
-import RealityKit
-
-// MARK: - AR View Container
-
-struct ARViewContainer: UIViewRepresentable {
-    let arView: ARView
-
-    func makeUIView(context: Context) -> ARView {
-        return arView
-    }
-
-    func updateUIView(_ uiView: ARView, context: Context) {}
-}
 
 // MARK: - AR Session Manager
 
 @MainActor
 class ARSessionManager: ObservableObject {
-    let arView: ARView
+    let session = ARSession()
     private var coordinator: ARSessionCoordinator?
 
     @Published var isSessionRunning = false
     @Published var trackingState: ARCamera.TrackingState = .notAvailable
-
-    init() {
-        arView = ARView(frame: .zero)
-        arView.automaticallyConfigureSession = false
-    }
 
     func startSession(coordinator: ARSessionCoordinator) {
         self.coordinator = coordinator
 
         let configuration = ARWorldTrackingConfiguration()
 
-        // Enable scene depth (LiDAR)
+        // Enable scene depth (LiDAR) — keeps LiDAR-assisted tracking even though we don't save full depth maps
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
             configuration.frameSemantics.insert(.sceneDepth)
         }
@@ -42,24 +24,32 @@ class ARSessionManager: ObservableObject {
             configuration.frameSemantics.insert(.smoothedSceneDepth)
         }
 
-        // Request highest frame rate
-        if let videoFormat = ARWorldTrackingConfiguration.supportedVideoFormats.first(where: { $0.framesPerSecond == 60 }) {
-            configuration.videoFormat = videoFormat
+        // Select 1920x1440 @ 60fps (good balance for video + training)
+        // ARKit doesn't support ultrawide camera for world tracking, so we use wide-angle
+        let allFormats = ARWorldTrackingConfiguration.supportedVideoFormats
+        let selectedFormat = allFormats.first(where: {
+            $0.framesPerSecond == 60 && $0.imageResolution.width == 1920 && $0.imageResolution.height == 1440
+        }) ?? allFormats.first(where: { $0.framesPerSecond == 60 })
+
+        if let format = selectedFormat {
+            configuration.videoFormat = format
+            let res = format.imageResolution
+            print("Selected format: \(Int(res.width))x\(Int(res.height)) @ \(format.framesPerSecond) fps")
         }
 
-        arView.session.delegate = coordinator
-        arView.session.run(configuration)
+        session.delegate = coordinator
+        session.run(configuration)
         isSessionRunning = true
     }
 
     func pauseSession() {
-        arView.session.pause()
+        session.pause()
         isSessionRunning = false
     }
 
     func resumeSession() {
-        guard let config = arView.session.configuration else { return }
-        arView.session.run(config)
+        guard let config = session.configuration else { return }
+        session.run(config)
         isSessionRunning = true
     }
 

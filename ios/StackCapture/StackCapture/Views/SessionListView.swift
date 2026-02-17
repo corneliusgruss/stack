@@ -152,7 +152,10 @@ struct SessionRowView: View {
             HStack(spacing: 12) {
                 if let meta = session.metadata {
                     Label("\(meta.rgbFrameCount)", systemImage: "photo")
-                    Label("\(meta.depthFrameCount)", systemImage: "cube")
+
+                    if let encoderCount = meta.encoderCount {
+                        Label("\(encoderCount)", systemImage: "hand.raised")
+                    }
 
                     if let duration = meta.durationSeconds {
                         Label(formatDuration(duration), systemImage: "clock")

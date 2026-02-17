@@ -6,46 +6,34 @@ import UIKit
 actor StorageManager {
     private let sessionURL: URL
     private let rgbDirectory: URL
-    private let depthDirectory: URL
 
     private var poses: [PoseFrame] = []
     private var rgbCount: UInt64 = 0
-    private var depthCount: UInt64 = 0
 
     init(sessionURL: URL) throws {
         self.sessionURL = sessionURL
         self.rgbDirectory = sessionURL.appendingPathComponent("rgb")
-        self.depthDirectory = sessionURL.appendingPathComponent("depth")
 
-        // Create directories
+        // Create directories (no depth directory)
         let fm = FileManager.default
         try fm.createDirectory(at: sessionURL, withIntermediateDirectories: true)
         try fm.createDirectory(at: rgbDirectory, withIntermediateDirectories: true)
-        try fm.createDirectory(at: depthDirectory, withIntermediateDirectories: true)
     }
 
     // MARK: - Frame Storage
 
     func storeFrame(_ data: FrameData) async throws {
-        // Store RGB (already JPEG encoded)
+        // Store RGB (already resized + JPEG encoded)
         let rgbFilename = String(format: "%06llu.jpg", data.rgbIndex)
         let rgbURL = rgbDirectory.appendingPathComponent(rgbFilename)
         try data.jpegData.write(to: rgbURL)
         rgbCount = data.rgbIndex + 1
 
-        // Store depth if available
-        if let depthData = data.depthData, let depthIdx = data.depthIndex {
-            let depthFilename = String(format: "%06llu.bin", depthIdx)
-            let depthURL = depthDirectory.appendingPathComponent(depthFilename)
-            try depthData.write(to: depthURL)
-            depthCount = depthIdx + 1
-        }
-
-        // Add pose
+        // Add pose with depth point
         let pose = PoseFrame(
             timestamp: data.timestamp,
             rgbIndex: data.rgbIndex,
-            depthIndex: data.depthIndex,
+            depth: data.depth,
             transform: data.transform
         )
         poses.append(pose)
@@ -53,7 +41,15 @@ actor StorageManager {
 
     // MARK: - Finalization
 
-    func finalize(startTime: Date, rgbResolution: [Int], depthResolution: [Int], deviceModel: String, iosVersion: String) async throws {
+    func finalize(
+        startTime: Date,
+        rgbResolution: [Int],
+        deviceModel: String,
+        iosVersion: String,
+        encoderReadings: [EncoderReading],
+        bleConnected: Bool,
+        hasVideo: Bool
+    ) async throws {
         // Sort poses by rgbIndex (async processing may have written them out of order)
         let sortedPoses = poses.sorted { $0.rgbIndex < $1.rgbIndex }
 
@@ -64,8 +60,15 @@ actor StorageManager {
         let posesData = try encoder.encode(sortedPoses)
         try posesData.write(to: posesURL)
 
+        // Write encoders.json (if any readings)
+        if !encoderReadings.isEmpty {
+            let encodersURL = sessionURL.appendingPathComponent("encoders.json")
+            let encoderData = try encoder.encode(encoderReadings)
+            try encoderData.write(to: encodersURL)
+        }
+
         // Calculate duration
-        let duration: Double? = poses.last.map { $0.timestamp - (poses.first?.timestamp ?? 0) }
+        let duration: Double? = sortedPoses.last.map { $0.timestamp - (sortedPoses.first?.timestamp ?? 0) }
 
         // Write metadata.json
         let metadata = SessionMetadata(
@@ -74,11 +77,12 @@ actor StorageManager {
             startTime: startTime,
             endTime: Date(),
             rgbResolution: rgbResolution,
-            depthResolution: depthResolution,
             rgbFrameCount: rgbCount,
-            depthFrameCount: depthCount,
             poseCount: UInt64(poses.count),
-            durationSeconds: duration
+            durationSeconds: duration,
+            encoderCount: encoderReadings.isEmpty ? nil : encoderReadings.count,
+            bleConnected: bleConnected,
+            hasVideo: hasVideo
         )
 
         let metadataURL = sessionURL.appendingPathComponent("metadata.json")

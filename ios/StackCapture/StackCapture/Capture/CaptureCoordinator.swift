@@ -6,195 +6,253 @@ import CoreImage
 
 // MARK: - Capture Coordinator
 
-@MainActor
 class CaptureCoordinator: ObservableObject {
+    // MARK: - Published (must update on main thread)
     @Published var isRecording = false
     @Published var frameCount: UInt64 = 0
-    @Published var depthFrameCount: UInt64 = 0
     @Published var duration: TimeInterval = 0
     @Published var error: Error?
+    @Published var currentDepthPoint: Float? = nil
 
+    /// Called from ARKit's thread with each camera pixel buffer for live preview display.
+    var onPreviewBuffer: ((CVPixelBuffer) -> Void)?
+
+    // MARK: - Main thread state
+    var bleManager: BLEManager?
     private var storageManager: StorageManager?
+    private var videoRecorder: VideoRecorder?
     private var startTime: Date?
+    private let rgbResolution: [Int] = [480, 360]
+
+    // MARK: - Processing queue and its state
+    private let processingQueue = DispatchQueue(label: "capture.processing", qos: .userInitiated)
+    // Only accessed on processingQueue:
     private var firstTimestamp: Double?
-    private var lastDepthTime: Double = 0
     private var rgbIndex: UInt64 = 0
-    private var depthIndex: UInt64 = 0
-
-    private var rgbResolution: [Int] = [1920, 1440]
-    private var depthResolution: [Int] = [256, 192]
-
     private var frameBuffer: [FrameData] = []
-    private var isProcessing = false
+    private var pendingStorageTask: Task<Void, Never>?
 
-    // Depth capture at 30Hz (every other frame at 60fps)
-    private let depthInterval: Double = 1.0 / 30.0
-    private let jpegQuality: CGFloat = 0.85
+    // Written on main thread, read on ARKit/processing thread (benign race at boundaries)
+    private var recordingFlag = false
+
+    // MARK: - Constants
+    private let jpegQuality: CGFloat = 0.8
     private let ciContext = CIContext()
+    private let targetWidth: Int = 480
+    private let targetHeight: Int = 360
+    private let batchSize = 10
 
-    // MARK: - Public API
+    // MARK: - Public API (main thread)
 
+    @MainActor
     func startCapture() throws {
-        // Create session directory
         let sessionName = Self.generateSessionName()
         let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let sessionURL = documentsURL.appendingPathComponent(sessionName)
 
         storageManager = try StorageManager(sessionURL: sessionURL)
 
-        // Reset state
+        let videoURL = sessionURL.appendingPathComponent("video.mov")
+        videoRecorder = VideoRecorder(outputURL: videoURL)
+
         startTime = Date()
-        firstTimestamp = nil
-        lastDepthTime = 0
-        rgbIndex = 0
-        depthIndex = 0
         frameCount = 0
-        depthFrameCount = 0
         duration = 0
         error = nil
-        frameBuffer = []
 
+        // Reset processing queue state before enabling recording
+        processingQueue.sync {
+            firstTimestamp = nil
+            rgbIndex = 0
+            frameBuffer = []
+            pendingStorageTask = nil
+        }
+
+        bleManager?.startRecording()
+
+        recordingFlag = true
         isRecording = true
         print("Started capture: \(sessionName)")
     }
 
+    @MainActor
     func stopCapture() async {
+        recordingFlag = false
         isRecording = false
 
-        // Process remaining frames
-        await processBufferedFrames()
+        bleManager?.stopRecording()
 
-        // Finalize storage
+        // Wait for processing queue to drain and grab remaining frames + pending task
+        let (remaining, pendingTask): ([FrameData], Task<Void, Never>?) = await withCheckedContinuation { continuation in
+            processingQueue.async { [self] in
+                let frames = frameBuffer
+                let task = pendingStorageTask
+                frameBuffer = []
+                pendingStorageTask = nil
+                continuation.resume(returning: (frames, task))
+            }
+        }
+
+        // Wait for any in-flight storage batch
+        await pendingTask?.value
+
+        // Flush remaining frames to storage
+        if let storage = storageManager {
+            for frame in remaining {
+                do {
+                    try await storage.storeFrame(frame)
+                } catch {
+                    print("Failed to store frame \(frame.rgbIndex): \(error)")
+                    self.error = error
+                }
+            }
+        }
+
+        // Finalize video
+        if let recorder = videoRecorder {
+            await recorder.finish()
+        }
+
+        // Get encoder readings
+        let encoderReadings = bleManager?.getRecordedReadings() ?? []
+
         guard let storage = storageManager, let start = startTime else { return }
 
         do {
             try await storage.finalize(
                 startTime: start,
                 rgbResolution: rgbResolution,
-                depthResolution: depthResolution,
                 deviceModel: ARSessionManager.deviceModel,
-                iosVersion: UIDevice.current.systemVersion
+                iosVersion: UIDevice.current.systemVersion,
+                encoderReadings: encoderReadings,
+                bleConnected: bleManager?.isConnected ?? false,
+                hasVideo: videoRecorder != nil
             )
-            print("Capture finalized: \(frameCount) RGB, \(depthFrameCount) depth frames")
+            print("Capture finalized: \(frameCount) RGB frames, \(encoderReadings.count) encoder readings")
         } catch {
             self.error = error
             print("Failed to finalize: \(error)")
         }
 
         storageManager = nil
+        videoRecorder = nil
         startTime = nil
     }
 
-    // MARK: - Frame Handling
+    // MARK: - Frame Handling (called from ARKit's thread)
 
     func handleFrame(_ frame: ARFrame) {
-        guard isRecording else { return }
-
+        // --- Fast extraction on ARKit's thread (<1ms) ---
         let timestamp = frame.timestamp
+        let transform = frame.camera.transform
+        let pixelBuffer = frame.capturedImage  // independently ref-counted
 
-        // Track first timestamp for duration
+        // Sample depth point (fast — few pointer reads)
+        let depthPoint: Float?
+        if let depthMap = frame.smoothedSceneDepth?.depthMap {
+            depthPoint = sampleCenterDepth(depthMap)
+        } else {
+            depthPoint = nil
+        }
+
+        // Live depth display (UI update)
+        DispatchQueue.main.async { [weak self] in
+            self?.currentDepthPoint = depthPoint
+        }
+
+        // Live preview — caller (ARKit thread) passes pixel buffer to display layer
+        onPreviewBuffer?(pixelBuffer)
+
+        // After this point, ARFrame can be released — we only hold pixelBuffer ref
+        guard recordingFlag else { return }
+
+        // --- Dispatch heavy work to serial processing queue ---
+        processingQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.processFrame(
+                timestamp: timestamp,
+                transform: transform,
+                pixelBuffer: pixelBuffer,
+                depthPoint: depthPoint
+            )
+        }
+    }
+
+    // MARK: - Processing (on processingQueue — serial, no locking needed)
+
+    private func processFrame(
+        timestamp: Double,
+        transform: simd_float4x4,
+        pixelBuffer: CVPixelBuffer,
+        depthPoint: Float?
+    ) {
+        // Initialize video recorder on first frame
         if firstTimestamp == nil {
             firstTimestamp = timestamp
-        }
-
-        // Update duration
-        if let first = firstTimestamp {
-            duration = timestamp - first
-        }
-
-        // Determine if we capture depth this frame
-        var captureDepth = false
-        var currentDepthIndex: UInt64? = nil
-
-        if timestamp - lastDepthTime >= depthInterval {
-            if frame.smoothedSceneDepth?.depthMap != nil {
-                captureDepth = true
-                currentDepthIndex = depthIndex
-                lastDepthTime = timestamp
+            let fullWidth = CVPixelBufferGetWidth(pixelBuffer)
+            let fullHeight = CVPixelBufferGetHeight(pixelBuffer)
+            do {
+                try videoRecorder?.start(width: fullWidth, height: fullHeight)
+            } catch {
+                print("Failed to start video recorder: \(error)")
             }
         }
 
-        // Get resolution from first frame
-        if rgbIndex == 0 {
-            let rgbBuffer = frame.capturedImage
-            rgbResolution = [CVPixelBufferGetWidth(rgbBuffer), CVPixelBufferGetHeight(rgbBuffer)]
+        let currentDuration = timestamp - (firstTimestamp ?? timestamp)
+        let currentIndex = rgbIndex
+        rgbIndex += 1
 
-            if let depthBuffer = frame.smoothedSceneDepth?.depthMap {
-                depthResolution = [CVPixelBufferGetWidth(depthBuffer), CVPixelBufferGetHeight(depthBuffer)]
-            }
+        // UI updates (lightweight — just property writes)
+        DispatchQueue.main.async { [weak self] in
+            self?.duration = currentDuration
+            self?.frameCount = currentIndex + 1
         }
 
-        // Encode RGB to JPEG immediately (ARKit recycles buffers)
-        guard let jpegData = encodeToJPEG(frame.capturedImage) else {
-            print("Failed to encode frame \(rgbIndex) to JPEG")
+        // Append full-res frame to video recorder (hardware HEVC — fast)
+        videoRecorder?.appendFrame(pixelBuffer, timestamp: timestamp)
+
+        // JPEG encode at 480x360 for training data (~5ms — the heavy operation)
+        guard let jpegData = resizeAndEncodeToJPEG(pixelBuffer) else {
+            print("Failed to encode frame \(currentIndex) to JPEG")
             return
         }
 
-        // Copy depth data immediately
-        var depthData: Data? = nil
-        if captureDepth, let depthBuffer = frame.smoothedSceneDepth?.depthMap {
-            depthData = copyDepthBuffer(depthBuffer)
-        }
+        // pixelBuffer can now be released (JPEG data is a copy, video encoder has its own ref)
 
-        // Create frame data with copied/encoded data
         let frameData = FrameData(
             timestamp: timestamp,
-            rgbIndex: rgbIndex,
-            depthIndex: captureDepth ? currentDepthIndex : nil,
-            transform: frame.camera.transform,
+            rgbIndex: currentIndex,
+            depth: depthPoint,
+            transform: transform,
             jpegData: jpegData,
-            depthData: depthData
+            pixelBuffer: nil
         )
 
-        // Update indices
-        rgbIndex += 1
-        if captureDepth {
-            depthIndex += 1
-        }
+        // Queue for async storage write
+        frameBuffer.append(frameData)
 
-        // Update UI counters
-        frameCount = rgbIndex
-        depthFrameCount = depthIndex
+        if frameBuffer.count >= batchSize && pendingStorageTask == nil {
+            let framesToStore = frameBuffer
+            frameBuffer = []
 
-        // Queue for async processing
-        queueFrame(frameData)
-    }
-
-    // MARK: - Async Processing
-
-    private func queueFrame(_ data: FrameData) {
-        frameBuffer.append(data)
-
-        // Process in batches to avoid overwhelming storage
-        if frameBuffer.count >= 10 && !isProcessing {
-            Task {
-                await processBufferedFrames()
+            pendingStorageTask = Task { [weak self] in
+                guard let self = self, let storage = self.storageManager else { return }
+                for frame in framesToStore {
+                    do {
+                        try await storage.storeFrame(frame)
+                    } catch {
+                        print("Failed to store frame \(frame.rgbIndex): \(error)")
+                        await MainActor.run { [weak self] in
+                            self?.error = error
+                        }
+                    }
+                }
+                // Signal completion on processing queue
+                self.processingQueue.async { [weak self] in
+                    self?.pendingStorageTask = nil
+                }
             }
         }
-    }
-
-    private func processBufferedFrames() async {
-        guard !frameBuffer.isEmpty else { return }
-
-        isProcessing = true
-        let framesToProcess = frameBuffer
-        frameBuffer = []
-
-        guard let storage = storageManager else {
-            isProcessing = false
-            return
-        }
-
-        for frame in framesToProcess {
-            do {
-                try await storage.storeFrame(frame)
-            } catch {
-                print("Failed to store frame \(frame.rgbIndex): \(error)")
-                self.error = error
-            }
-        }
-
-        isProcessing = false
     }
 
     // MARK: - Helpers
@@ -205,23 +263,57 @@ class CaptureCoordinator: ObservableObject {
         return "session_\(formatter.string(from: Date()))"
     }
 
-    private func encodeToJPEG(_ buffer: CVPixelBuffer) -> Data? {
+    /// Resize to 480x360 and encode as JPEG
+    private func resizeAndEncodeToJPEG(_ buffer: CVPixelBuffer) -> Data? {
         let ciImage = CIImage(cvPixelBuffer: buffer)
-        guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else {
+
+        let scaleX = CGFloat(targetWidth) / ciImage.extent.width
+        let scaleY = CGFloat(targetHeight) / ciImage.extent.height
+        let scaled = ciImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+
+        guard let cgImage = ciContext.createCGImage(scaled, from: scaled.extent) else {
             return nil
         }
         let uiImage = UIImage(cgImage: cgImage)
         return uiImage.jpegData(compressionQuality: jpegQuality)
     }
 
-    private func copyDepthBuffer(_ buffer: CVPixelBuffer) -> Data {
-        CVPixelBufferLockBaseAddress(buffer, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+    /// Sample the median depth from a 5x5 region at the center of the depth map.
+    /// Returns depth in meters, or nil if invalid.
+    private func sampleCenterDepth(_ depthMap: CVPixelBuffer) -> Float? {
+        CVPixelBufferLockBaseAddress(depthMap, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(depthMap, .readOnly) }
 
-        let height = CVPixelBufferGetHeight(buffer)
-        let bytesPerRow = CVPixelBufferGetBytesPerRow(buffer)
-        let baseAddress = CVPixelBufferGetBaseAddress(buffer)!
+        let width = CVPixelBufferGetWidth(depthMap)
+        let height = CVPixelBufferGetHeight(depthMap)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
+        guard let baseAddress = CVPixelBufferGetBaseAddress(depthMap) else { return nil }
 
-        return Data(bytes: baseAddress, count: height * bytesPerRow)
+        let centerX = width / 2
+        let centerY = height / 2
+
+        var values: [Float] = []
+        values.reserveCapacity(25)
+
+        for dy in -2...2 {
+            for dx in -2...2 {
+                let x = centerX + dx
+                let y = centerY + dy
+                guard x >= 0, x < width, y >= 0, y < height else { continue }
+
+                let ptr = baseAddress.advanced(by: y * bytesPerRow + x * MemoryLayout<Float>.size)
+                let value = ptr.assumingMemoryBound(to: Float.self).pointee
+
+                if value.isFinite && value > 0 {
+                    values.append(value)
+                }
+            }
+        }
+
+        guard !values.isEmpty else { return nil }
+
+        // Median
+        values.sort()
+        return values[values.count / 2]
     }
 }

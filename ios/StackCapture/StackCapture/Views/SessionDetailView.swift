@@ -26,10 +26,18 @@ struct SessionDetailView: View {
             if let meta = session.metadata {
                 Section("Capture Stats") {
                     LabeledContent("RGB Frames", value: "\(meta.rgbFrameCount)")
-                    LabeledContent("Depth Frames", value: "\(meta.depthFrameCount)")
                     LabeledContent("Pose Samples", value: "\(meta.poseCount)")
-                    LabeledContent("RGB Resolution", value: "\(meta.rgbResolution[0])×\(meta.rgbResolution[1])")
-                    LabeledContent("Depth Resolution", value: "\(meta.depthResolution[0])×\(meta.depthResolution[1])")
+                    LabeledContent("RGB Resolution", value: "\(meta.rgbResolution[0])x\(meta.rgbResolution[1])")
+
+                    if let encoderCount = meta.encoderCount {
+                        LabeledContent("Encoder Readings", value: "\(encoderCount)")
+                    }
+                    if let ble = meta.bleConnected {
+                        LabeledContent("Glove Connected", value: ble ? "Yes" : "No")
+                    }
+                    if let video = meta.hasVideo {
+                        LabeledContent("Video Recorded", value: video ? "Yes" : "No")
+                    }
                 }
 
                 Section("Timestamps") {
@@ -141,21 +149,22 @@ extension URL: @retroactive Identifiable {
 #Preview {
     NavigationStack {
         SessionDetailView(session: SessionInfo(
-            id: "session_2026-01-31_153045",
+            id: "session_2026-02-16_153045",
             url: URL(fileURLWithPath: "/tmp"),
             metadata: SessionMetadata(
                 deviceModel: "iPhone16,1",
-                iosVersion: "17.2",
+                iosVersion: "18.3",
                 startTime: Date(),
-                endTime: Date().addingTimeInterval(65.3),
-                rgbResolution: [1920, 1440],
-                depthResolution: [256, 192],
-                rgbFrameCount: 3918,
-                depthFrameCount: 1959,
-                poseCount: 3918,
-                durationSeconds: 65.3
+                endTime: Date().addingTimeInterval(30.5),
+                rgbResolution: [480, 360],
+                rgbFrameCount: 1830,
+                poseCount: 1830,
+                durationSeconds: 30.5,
+                encoderCount: 1525,
+                bleConnected: true,
+                hasVideo: true
             ),
-            folderSize: 892_000_000
+            folderSize: 34_000_000
         ))
     }
 }

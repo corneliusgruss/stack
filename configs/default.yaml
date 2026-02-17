@@ -1,0 +1,53 @@
+# Stack - Default Training Configuration
+
+# Policy architecture
+policy:
+  # Observation: 7 (pose) + 4 (joints) + 1 (depth point) = 12
+  obs_dim: 12
+  image_size: 224
+  use_depth: true
+
+  # Action space: 7 (pose) + 4 (joints) = 11 (no depth — can't command depth on robot)
+  action_dim: 11
+  action_horizon: 16   # Predict 16 future timesteps
+  prediction_horizon: 16
+  obs_horizon: 2       # Condition on 2 past observations
+
+  # Diffusion
+  num_diffusion_steps: 100
+  beta_schedule: "squaredcos_cap_v2"
+
+  # Network
+  hidden_dim: 256
+  num_layers: 4
+
+  # Training
+  batch_size: 64
+  learning_rate: 1.0e-4
+  num_epochs: 100
+
+# Data
+data:
+  train_dir: "data/processed/train"
+  val_dir: "data/processed/val"
+  image_size: 224
+  # Augmentation
+  random_crop: true
+  color_jitter: true
+
+# Training
+training:
+  seed: 42
+  num_workers: 4
+  gradient_clip: 1.0
+  ema_decay: 0.995
+  checkpoint_every: 10
+  eval_every: 5
+
+# Logging
+logging:
+  wandb:
+    enabled: false
+    project: "stack"
+    entity: null
+  tensorboard: true

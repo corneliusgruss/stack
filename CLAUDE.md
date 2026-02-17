@@ -10,29 +10,50 @@ Proprioceptive data collection and diffusion policy for dexterous manipulation.
 ## Current Phase
 **Phase 1: Hardware** - Designing and 3D printing the instrumented glove
 
-### Status (2026-02-01)
+### Status (2026-02-16)
 - [x] Gripper mechanical design (DESIGN.md)
 - [x] Electronics ordered (ESP32, AS5600 encoders, TCA9548A multiplexer)
-- [x] ESP32 firmware written
+- [x] ESP32 firmware written (Serial + BLE dual output)
 - [x] Python data collection pipeline written
-- [x] Diffusion policy scaffolding written
+- [x] Diffusion policy fully implemented (ResNet18 + ConditionalUnet1D, matches Chi et al.)
 - [x] ARKit iPhone app implemented & tested (ios/StackCapture)
 - [x] Python iPhone session loader (stack/data/iphone_loader.py)
 - [x] Visualization tools (stack/viz/)
 - [x] iPhone capture verified: 60 FPS, 0% dropped frames
 - [x] Orientation confirmed correct for horizontal mount (power button up)
-- [ ] **IN PROGRESS:** Printing finger joints, testing fit
-- [ ] Printing palm, testing MCP joint
-- [ ] Full glove assembly
-- [ ] Encoder + iPhone timestamp alignment
+- [x] ESP32 board tested (ESP32-D0WD-V3, dual core, 240 MHz, 4 MB flash)
+- [x] TCA9548A multiplexer verified on I2C bus at 0x70
+- [x] AS5600 encoder verified on mux CH0 at 0x36 — smooth angle readings at 100 Hz
+- [x] Full electronics chain validated: ESP32 → TCA9548A → AS5600 (all 4 encoders soldered + tested)
+- [x] Test magnet-to-encoder fit in joint (air gap, centering, stability)
+- [x] Printing finger joints, testing fit
+- [x] Printing palm, testing MCP joint
+- [x] StackCapture app overhauled: BLE, ultrawide, landscape, size reduction
+- [x] ESP32 BLE peripheral (50 Hz encoder notifications as "StackGlove")
+- [x] iOS BLE manager (auto-scan, auto-reconnect, live encoder display)
+- [x] Landscape orientation (volume buttons down for recording grip)
+- [x] Ultrawide camera selection (0.5x, wider FoV for hand visibility)
+- [x] Image resize to 480x360 JPEG (was 1920x1440 — 9x storage reduction)
+- [x] Full-res HEVC video recording (video.mov for papers/demos)
+- [x] Depth maps dropped (not used by UMI-FT, biggest storage hog)
+- [x] Single-point LiDAR depth (virtual ToF sensor, median of 5x5 center)
+- [x] Encoder + iPhone timestamp alignment (nearest-neighbor matching)
+- [x] Python loader updated for new session format (12D episodes)
+- [x] Training pipeline complete: synthetic data, dataset, train loop, eval, tests (16/16 pass)
+- [x] Architecture upgraded: ResNet18 visual encoder + ConditionalUnet1D (matches Diffusion Policy paper)
+- [ ] **IN PROGRESS:** Full glove assembly
+- [x] Flash BLE firmware to ESP32 and verify with nRF Connect
+- [x] Build & deploy updated StackCapture to iPhone
+- [ ] End-to-end test: record session with glove + load in Python
 
 ## Key Differentiator
 UMI-FT captures: **pose (7D) + gripper width (1D) = 8D**
-Stack captures: **pose (7D) + 4 joint angles (4D) = 11D**
+Stack captures: **pose (7D) + 4 joint angles (4D) + 1 depth point (1D) = 12D**
 
 This richer proprioception could enable learning more dexterous behaviors.
+The depth point acts as a virtual ToF sensor (like Sunday Robotics' Skill Capture Glove) — for free via iPhone LiDAR.
 
-## Project Structure (Updated 2026-02-01)
+## Project Structure (Updated 2026-02-16)
 
 ```
 stack/
@@ -51,6 +72,9 @@ stack/
 │   ├── analysis/           # Python kinematics/physics scripts
 │   ├── cad/exports/        # STL/STEP exports from Fusion
 │   └── docs/               # Design diagrams (PNG)
+├── docs/                   # Project documentation
+│   ├── gpu_access.md       # SCC/Colab/local GPU setup guide
+│   └── gruss_me740_proposal.tex  # Symlink to approved proposal
 ├── configs/                # Hydra/OmegaConf training configs
 ├── tests/                  # pytest tests
 └── data/                   # Local data (gitignored)
@@ -58,6 +82,8 @@ stack/
     ├── processed/          # Zarr datasets
     └── models/             # Trained checkpoints
 ```
+
+**Proposal:** `docs/gruss_me740_proposal.tex` (symlink → `~/workspace/docs/academic/ms_robotics_bu/me740_vision_robotics/`)
 
 ## CLI Commands
 
@@ -79,21 +105,65 @@ stack-eval --checkpoint outputs/checkpoint_0100.pt
 | AS5600 encoders (×4) | Ordered |
 | TCA9548A multiplexer | Ordered |
 | ESP32 (HiLetgo) | Ordered |
-| iPhone 15 Pro | Have |
+| iPhone 16 Pro | Have |
 | PLA filament | Have |
 | Bambu Lab P1S | Have (bought 2026-01-29) |
 | Finger prints | In progress |
 
 ## Key Files
 
+- `docs/gpu_access.md` - GPU access plan (SCC, Colab, local) with draft email + SGE examples
+- `docs/gruss_me740_proposal.tex` - Approved ME740 proposal (symlink)
 - `hardware/DESIGN.md` - Full gripper design documentation
-- `stack/data/encoder.py` - ESP32 serial communication
-- `stack/data/iphone_loader.py` - iPhone session loading
+- `stack/data/encoder.py` - ESP32 serial communication (USB)
+- `stack/data/iphone_loader.py` - iPhone session loading (v2: RGB + poses + encoders + depth point)
 - `stack/viz/iphone_viz.py` - Session visualization tools
-- `stack/policy/diffusion.py` - Diffusion policy implementation
-- `firmware/encoder_reader/encoder_reader.ino` - ESP32 firmware
-- `ios/StackCapture/` - iPhone ARKit data collection app (60 FPS, LiDAR depth)
+- `stack/policy/diffusion.py` - Diffusion policy (ResNet18 + ConditionalUnet1D)
+- `stack/data/synthetic.py` - Synthetic data generator for pipeline testing
+- `stack/data/training_dataset.py` - PyTorch Dataset with sliding window sampling + normalization
+- `stack/scripts/train.py` - Training loop (EMA, gradient clip, cosine LR, MPS support)
+- `stack/scripts/eval.py` - Evaluation (position/rotation/joint error metrics)
+- `tests/test_training_pipeline.py` - 16 integration tests (all pass)
+- `firmware/encoder_reader/encoder_reader.ino` - ESP32 firmware (Serial 100Hz + BLE 50Hz)
+- `ios/StackCapture/` - iPhone ARKit data collection app (landscape, ultrawide, BLE)
+- `ios/StackCapture/.../BLE/BLEManager.swift` - CoreBluetooth manager for StackGlove
+- `ios/StackCapture/.../Capture/VideoRecorder.swift` - HEVC video recorder
 - `configs/default.yaml` - Training configuration
+
+## Network Architecture
+
+Matches Chi et al. "Diffusion Policy" (RSS 2023). Three components:
+
+**1. Visual Encoder — ResNet18 (ImageNet pretrained)**
+- Input: (B, obs_horizon, 3, 224, 224) RGB images
+- Per-image: ResNet18 → 512-dim → Linear → hidden_dim
+- Fused with proprio across obs_horizon via MLP → hidden_dim conditioning vector
+
+**2. Noise Prediction — ConditionalUnet1D**
+- 1D convolutions over the action sequence (temporal axis)
+- 3-level UNet: channels (hidden_dim, 2x, 4x), e.g., (256, 512, 1024)
+- FiLM conditioning at every residual block from obs + timestep embedding
+- Skip connections between encoder/decoder at each resolution
+- action_horizon=16 → downsampled to 8 → 4 → mid → upsampled back to 16
+
+**3. Diffusion — DDPM**
+- 100 steps, cosine beta schedule
+- Training: predict noise ε, MSE loss
+- Inference: iterative denoising from pure noise → action chunk
+
+**Data flow:**
+```
+RGB images ──→ ResNet18 ──→ ┐
+                             ├──→ obs_encoder ──→ obs_cond (hidden_dim)
+Proprio (12D) ────────────→ ┘                         │
+                                                       ↓
+Noisy actions (11D × 16) ──→ ConditionalUnet1D ←── FiLM(obs_cond + timestep_emb)
+                                    │
+                                    ↓
+                            ε_pred (11D × 16)
+```
+
+**Parameter count:** ~12M (ResNet18: 11M, UNet: ~1M, obs encoder: ~70K)
 
 ## References
 
@@ -114,7 +184,46 @@ Cornelius graduates May 2026 and needs a job before then. Sunday Robotics reject
 
 Don't wait until end of session - update as we go.
 
+## Session Data Format (v2)
+
+```
+session_YYYY-MM-DD_HHMMSS/
+├── metadata.json         # Device, resolutions, counts, encoder info
+├── poses.json            # [{timestamp, rgbIndex, depth, transform}, ...]
+├── encoders.json         # [{timestamp, esp_timestamp_ms, angles...}, ...]
+├── video.mov             # Full-resolution HEVC video for visualization
+└── rgb/
+    ├── 000000.jpg        # 480x360 JPEG quality 0.8
+    └── ...
+```
+
+**Storage:** ~69 MB/min (was ~600 MB/min). 50 demos of 30s each = ~1.7 GB.
+
 ## Session Log
+
+### 2026-02-16 (Sunday)
+- Major StackCapture app overhaul: BLE, ultrawide, landscape, size reduction
+- ESP32 firmware: added BLE peripheral ("StackGlove"), 50 Hz encoder notifications, calibrate command
+- iOS BLEManager: auto-scan, auto-reconnect, live encoder display, recording integration
+- Landscape left orientation (volume buttons down for comfortable recording grip)
+- Ultrawide camera (0.5x) selection with fallback to wide
+- Image resize from 1920x1440 to 480x360 (~9x storage reduction)
+- Added full-res HEVC video recording (video.mov, ~12 MB/min)
+- Removed full depth map saving (biggest storage hog, not used by UMI-FT)
+- Added single-point LiDAR depth sampling (virtual ToF, median of 5x5 center region)
+- Updated Python loader for new session format (12D episodes, encoder alignment)
+- Updated diffusion policy obs_dim from 11 to 12 (+ depth point)
+- **Next:** Flash BLE firmware, build updated app, end-to-end test
+
+### 2026-02-11 (Tuesday)
+- Soldered encoder to TCA9548A multiplexer, wired to ESP32
+- Mini breadboard caused I2C connection failures — soldered header pins directly instead
+- Flashed board test firmware: ESP32-D0WD-V3 confirmed (dual core, 240 MHz, 4 MB flash)
+- I2C scan found TCA9548A at 0x70, AS5600 at 0x36 on CH0
+- Flashed encoder_reader firmware: smooth 100 Hz angle readings confirmed
+- Encoder readings are noisy when board/magnet aren't physically stable (expected)
+- **Next:** Print magnet mount test jig to validate air gap + centering before full finger CAD
+- **Learning:** Tiny breadboards unreliable for I2C — solder directly or use full-size breadboard
 
 ### 2026-02-01 (Saturday)
 - Implemented iOS ARKit capture app (StackCapture)

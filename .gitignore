@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data (large files - keep structure, ignore contents)
+data/raw/*
+data/processed/*
+data/models/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/models/.gitkeep
+
+# Logs
+logs/
+*.log
+
+# Secrets
+.env
+*.pem
+credentials.json
+
+# Hardware exports (large STLs tracked separately or via Git LFS)
+hardware/cad/exports/*.stl
+hardware/cad/exports/*.step
+
+# iOS build artifacts
+ios/build/
+ios/*.xcworkspace
+ios/Pods/
+
+# Xcode user data
+xcuserdata/

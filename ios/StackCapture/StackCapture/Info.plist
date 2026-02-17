@@ -8,6 +8,8 @@
     <true/>
     <key>NSCameraUsageDescription</key>
     <string>StackCapture needs camera access to record RGB video for demonstration collection.</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>StackCapture connects to the encoder glove via Bluetooth to read joint angles during recording.</string>
     <key>UIRequiredDeviceCapabilities</key>
     <array>
         <string>arkit</string>
@@ -20,7 +22,7 @@
     </dict>
     <key>UISupportedInterfaceOrientations</key>
     <array>
-        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
     <key>UIStatusBarStyle</key>
     <string>UIStatusBarStyleLightContent</string>

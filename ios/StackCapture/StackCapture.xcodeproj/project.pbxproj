@@ -18,6 +18,8 @@
 		009 /* SessionModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 109 /* SessionModels.swift */; };
 		010 /* ShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110 /* ShareSheet.swift */; };
 		011 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 201 /* Assets.xcassets */; };
+		012 /* BLEManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 112 /* BLEManager.swift */; };
+		013 /* VideoRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 113 /* VideoRecorder.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -32,6 +34,8 @@
 		109 /* SessionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionModels.swift; sourceTree = "<group>"; };
 		110 /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
 		111 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		112 /* BLEManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEManager.swift; sourceTree = "<group>"; };
+		113 /* VideoRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoRecorder.swift; sourceTree = "<group>"; };
 		201 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		300 /* StackCapture.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StackCapture.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -66,6 +70,7 @@
 				512 /* Capture */,
 				513 /* Models */,
 				514 /* Export */,
+				515 /* BLE */,
 			);
 			path = StackCapture;
 			sourceTree = "<group>";
@@ -102,6 +107,7 @@
 			children = (
 				107 /* CaptureCoordinator.swift */,
 				108 /* StorageManager.swift */,
+				113 /* VideoRecorder.swift */,
 			);
 			path = Capture;
 			sourceTree = "<group>";
@@ -120,6 +126,14 @@
 				110 /* ShareSheet.swift */,
 			);
 			path = Export;
+			sourceTree = "<group>";
+		};
+		515 /* BLE */ = {
+			isa = PBXGroup;
+			children = (
+				112 /* BLEManager.swift */,
+			);
+			path = BLE;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -201,6 +215,8 @@
 				008 /* StorageManager.swift in Sources */,
 				009 /* SessionModels.swift in Sources */,
 				010 /* ShareSheet.swift in Sources */,
+				012 /* BLEManager.swift in Sources */,
+				013 /* VideoRecorder.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -341,7 +357,7 @@
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationLandscapeRight;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -372,7 +388,7 @@
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationLandscapeRight;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
