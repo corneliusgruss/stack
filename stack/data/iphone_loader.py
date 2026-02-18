@@ -1,11 +1,16 @@
 """
-Load iPhone ARKit capture sessions from StackCapture app.
+Load capture sessions from StackCapture app.
 
-Session format (v2):
+Supports both ARKit sessions (poses from Apple) and raw/ultrawide sessions
+(poses from DROID-SLAM offline processing).
+
+Session format (v3 — camera-agnostic):
     session_YYYY-MM-DD_HHMMSS/
-    ├── metadata.json       # Device, resolution, frame counts
+    ├── metadata.json       # Device, resolution, frame counts, captureSource
     ├── poses.json          # [{timestamp, rgbIndex, depth, transform_4x4}, ...]
     ├── encoders.json       # [{timestamp, esp_timestamp_ms, index_mcp, ...}, ...]
+    ├── imu.json            # [{timestamp, accel:[x,y,z], gyro:[x,y,z]}, ...]
+    ├── calib.txt           # "fx fy cx cy" — camera intrinsics (for SLAM)
     ├── video.mov           # Full-resolution HEVC video
     └── rgb/
         ├── 000000.jpg      # 480x360 @ quality 0.8
@@ -22,8 +27,8 @@ from PIL import Image
 from scipy.spatial.transform import Rotation
 
 
-class iPhoneSession:
-    """Loader for a single iPhone capture session."""
+class SessionLoader:
+    """Loader for a single capture session (any source)."""
 
     def __init__(self, session_path: Path):
         self.path = Path(session_path)
@@ -38,6 +43,24 @@ class iPhoneSession:
                 self.metadata = json.load(f)
         else:
             self.metadata = {}
+
+        # Determine capture source
+        self._capture_source = self.metadata.get("captureSource", "iphone_arkit")
+        self._slam_processed = self.metadata.get("slamProcessed", None)
+
+        # Validate: non-ARKit sessions need SLAM processing for poses
+        if self._capture_source != "iphone_arkit" and not self._slam_processed:
+            poses_file = self.path / "poses.json"
+            if poses_file.exists():
+                with open(poses_file) as f:
+                    poses_data = json.load(f)
+                if len(poses_data) == 0:
+                    raise ValueError(
+                        f"Session {self.path.name} was captured with {self._capture_source} "
+                        f"but has not been processed through SLAM yet.\n"
+                        f"Run: stack-slam --session {self.path}\n"
+                        f"Or use notebooks/run_slam.ipynb on Colab."
+                    )
 
         # Load poses (sort by rgbIndex in case of out-of-order async writes)
         poses_file = self.path / "poses.json"
@@ -56,7 +79,31 @@ class iPhoneSession:
         else:
             self._encoders_raw = []
 
+        # Load IMU readings (if present — ultrawide/raw mode)
+        imu_file = self.path / "imu.json"
+        if imu_file.exists():
+            with open(imu_file) as f:
+                self._imu_raw = json.load(f)
+        else:
+            self._imu_raw = []
+
+        # Load camera intrinsics (if present)
+        calib_file = self.path / "calib.txt"
+        if calib_file.exists():
+            parts = calib_file.read_text().strip().split()
+            self._intrinsics = np.array([float(x) for x in parts[:4]], dtype=np.float32)
+        else:
+            self._intrinsics = None
+
         self.rgb_dir = self.path / "rgb"
+
+    @property
+    def capture_source(self) -> str:
+        return self._capture_source
+
+    @property
+    def slam_processed(self) -> Optional[bool]:
+        return self._slam_processed
 
     @property
     def num_rgb_frames(self) -> int:
@@ -72,12 +119,29 @@ class iPhoneSession:
         return len(self._encoders_raw)
 
     @property
+    def num_imu_readings(self) -> int:
+        return len(self._imu_raw)
+
+    @property
     def has_encoders(self) -> bool:
         return len(self._encoders_raw) > 0
 
     @property
+    def has_imu(self) -> bool:
+        return len(self._imu_raw) > 0
+
+    @property
     def has_video(self) -> bool:
         return (self.path / "video.mov").exists()
+
+    @property
+    def has_intrinsics(self) -> bool:
+        return self._intrinsics is not None
+
+    @property
+    def intrinsics(self) -> Optional[np.ndarray]:
+        """Camera intrinsics [fx, fy, cx, cy] or None."""
+        return self._intrinsics
 
     @property
     def rgb_resolution(self) -> Tuple[int, int]:
@@ -199,6 +263,30 @@ class iPhoneSession:
 
         return aligned
 
+    def get_imu_data(self) -> Optional[dict]:
+        """Get IMU data as dict with 'timestamps', 'accel', 'gyro' arrays.
+
+        Returns None if no IMU data.
+        """
+        if not self._imu_raw:
+            return None
+
+        n = len(self._imu_raw)
+        timestamps = np.zeros(n, dtype=np.float64)
+        accel = np.zeros((n, 3), dtype=np.float64)
+        gyro = np.zeros((n, 3), dtype=np.float64)
+
+        for i, reading in enumerate(self._imu_raw):
+            timestamps[i] = reading["timestamp"]
+            accel[i] = reading["accel"]
+            gyro[i] = reading["gyro"]
+
+        return {
+            "timestamps": timestamps,
+            "accel": accel,
+            "gyro": gyro,
+        }
+
     def load_all_rgb(self, max_frames: Optional[int] = None) -> np.ndarray:
         """
         Load all RGB frames as (T, H, W, 3) uint8.
@@ -235,11 +323,16 @@ class iPhoneSession:
     def summary(self) -> str:
         """Return a summary string of the session."""
         lines = [
-            f"iPhone Session: {self.path.name}",
+            f"Session: {self.path.name}",
+            f"  Source: {self._capture_source}",
             f"  RGB frames: {self.num_rgb_frames} ({self.rgb_resolution[0]}x{self.rgb_resolution[1]})",
             f"  Poses: {self.num_poses}",
             f"  Encoder readings: {self.num_encoder_readings}",
         ]
+        if self.has_imu:
+            lines.append(f"  IMU readings: {self.num_imu_readings}")
+        if self.has_intrinsics:
+            lines.append(f"  Intrinsics: fx={self._intrinsics[0]:.1f} fy={self._intrinsics[1]:.1f}")
         if self.duration:
             lines.append(f"  Duration: {self.duration:.1f}s")
         if self.metadata.get("deviceModel"):
@@ -248,12 +341,18 @@ class iPhoneSession:
             lines.append(f"  Video: video.mov")
         if self.metadata.get("bleConnected"):
             lines.append(f"  Glove: Connected")
+        if self._slam_processed is not None:
+            lines.append(f"  SLAM processed: {self._slam_processed}")
         return "\n".join(lines)
 
 
-def load_session(path: str | Path) -> iPhoneSession:
-    """Load an iPhone capture session from a directory path."""
-    return iPhoneSession(Path(path))
+# Backward compatibility alias
+iPhoneSession = SessionLoader
+
+
+def load_session(path: str | Path) -> SessionLoader:
+    """Load a capture session from a directory path."""
+    return SessionLoader(Path(path))
 
 
 def verify_session(path: str | Path) -> bool:
@@ -308,12 +407,17 @@ if __name__ == "__main__":
     if verify_session(session_path):
         session = load_session(session_path)
         print("\nSample data:")
+        print(f"  Source: {session.capture_source}")
         print(f"  First pose: {session.get_pose_7d(0)}")
         print(f"  First RGB shape: {session.get_rgb_frame(0).shape}")
         if session.has_encoders:
             print(f"  Encoder readings: {session.num_encoder_readings}")
             print(f"  First encoder: {session.get_encoder_reading(0)}")
             print(f"  12D episode shape: {session.get_episode_12d().shape}")
+        if session.has_imu:
+            imu = session.get_imu_data()
+            print(f"  IMU readings: {session.num_imu_readings}")
+            print(f"  IMU rate: {1.0 / np.mean(np.diff(imu['timestamps'])):.0f} Hz")
         depth = session.get_depth_point(0)
         if depth is not None:
             print(f"  First depth point: {depth:.3f} m")

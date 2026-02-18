@@ -169,7 +169,7 @@ uint16_t readAS5600RawAngle() {
   return ((uint16_t)high << 8) | low;
 }
 
-float readEncoderDegrees(uint8_t channel, int16_t offset) {
+float readEncoderDegrees(uint8_t channel, int16_t offset, bool invert) {
   selectChannel(channel);
   delayMicroseconds(50);  // Small delay after channel switch
 
@@ -179,7 +179,14 @@ float readEncoderDegrees(uint8_t channel, int16_t offset) {
   }
 
   // AS5600 is 12-bit (0-4095)
-  int16_t adjusted = (int16_t)raw - offset;
+  // invert=true: magnet mounted so raw decreases with flexion → flip direction
+  // invert=false: raw increases with flexion → keep as-is
+  int16_t adjusted;
+  if (invert) {
+    adjusted = offset - (int16_t)raw;
+  } else {
+    adjusted = (int16_t)raw - offset;
+  }
   if (adjusted < 0) adjusted += 4096;
   if (adjusted >= 4096) adjusted -= 4096;
 
@@ -231,10 +238,12 @@ void loop() {
   if (now - last_sample_time >= SAMPLE_PERIOD_MS) {
     last_sample_time = now;
 
-    float index_mcp = readEncoderDegrees(CH_INDEX_MCP, offset_index_mcp);
-    float index_pip = readEncoderDegrees(CH_INDEX_PIP, offset_index_pip);
-    float three_mcp = readEncoderDegrees(CH_THREE_MCP, offset_three_mcp);
-    float three_pip = readEncoderDegrees(CH_THREE_PIP, offset_three_pip);
+    // Index-Finger: magnet orientation → raw increases with flexion (no invert)
+    // Three-Finger: magnet mounted opposite → raw decreases with flexion (invert)
+    float index_mcp = readEncoderDegrees(CH_INDEX_MCP, offset_index_mcp, false);
+    float index_pip = readEncoderDegrees(CH_INDEX_PIP, offset_index_pip, false);
+    float three_mcp = readEncoderDegrees(CH_THREE_MCP, offset_three_mcp, true);
+    float three_pip = readEncoderDegrees(CH_THREE_PIP, offset_three_pip, true);
 
     // Always output to Serial (100 Hz)
     Serial.print(now);

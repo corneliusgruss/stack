@@ -2,6 +2,36 @@ import Foundation
 import simd
 import CoreVideo
 
+// MARK: - Capture Source
+
+enum CaptureSource: String, Codable {
+    case iphoneArkit = "iphone_arkit"
+    case iphoneUltrawide = "iphone_ultrawide"
+    case stereoUsb = "stereo_usb"
+}
+
+// MARK: - Camera Intrinsics
+
+struct CameraIntrinsics: Codable {
+    let fx: Float
+    let fy: Float
+    let cx: Float
+    let cy: Float
+
+    /// Format as single-line calibration string: "fx fy cx cy"
+    var calibString: String {
+        "\(fx) \(fy) \(cx) \(cy)"
+    }
+}
+
+// MARK: - IMU Reading
+
+struct IMUReading: Codable {
+    let timestamp: Double
+    let accel: [Double]  // [x, y, z] m/s²
+    let gyro: [Double]   // [x, y, z] rad/s
+}
+
 // MARK: - Pose Frame
 
 struct PoseFrame: Codable {
@@ -62,6 +92,10 @@ struct SessionMetadata: Codable {
     let encoderCount: Int?
     let bleConnected: Bool?
     let hasVideo: Bool?
+    let captureSource: CaptureSource?
+    let slamProcessed: Bool?
+    let cameraIntrinsics: CameraIntrinsics?
+    let imuCount: Int?
 
     init(
         deviceModel: String = "",
@@ -74,7 +108,11 @@ struct SessionMetadata: Codable {
         durationSeconds: Double? = nil,
         encoderCount: Int? = nil,
         bleConnected: Bool? = nil,
-        hasVideo: Bool? = nil
+        hasVideo: Bool? = nil,
+        captureSource: CaptureSource? = nil,
+        slamProcessed: Bool? = nil,
+        cameraIntrinsics: CameraIntrinsics? = nil,
+        imuCount: Int? = nil
     ) {
         self.deviceModel = deviceModel
         self.iosVersion = iosVersion
@@ -87,6 +125,10 @@ struct SessionMetadata: Codable {
         self.encoderCount = encoderCount
         self.bleConnected = bleConnected
         self.hasVideo = hasVideo
+        self.captureSource = captureSource
+        self.slamProcessed = slamProcessed
+        self.cameraIntrinsics = cameraIntrinsics
+        self.imuCount = imuCount
     }
 }
 
@@ -128,7 +170,7 @@ struct FrameData {
     let timestamp: Double
     let rgbIndex: UInt64
     let depth: Float?  // Single-point depth from LiDAR center
-    let transform: simd_float4x4
+    let transform: simd_float4x4?  // nil for raw capture (poses from SLAM later)
     // Already-encoded data (copied immediately to avoid ARKit buffer recycling)
     let jpegData: Data
     // Full-resolution pixel buffer for video recording (retained)

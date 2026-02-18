@@ -20,6 +20,7 @@
 		011 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 201 /* Assets.xcassets */; };
 		012 /* BLEManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 112 /* BLEManager.swift */; };
 		013 /* VideoRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 113 /* VideoRecorder.swift */; };
+		6C937C002F455448002233EB /* RawCaptureSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C937BFF2F455448002233EB /* RawCaptureSession.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -38,6 +39,7 @@
 		113 /* VideoRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoRecorder.swift; sourceTree = "<group>"; };
 		201 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		300 /* StackCapture.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StackCapture.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6C937BFF2F455448002233EB /* RawCaptureSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RawCaptureSession.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -105,6 +107,7 @@
 		512 /* Capture */ = {
 			isa = PBXGroup;
 			children = (
+				6C937BFF2F455448002233EB /* RawCaptureSession.swift */,
 				107 /* CaptureCoordinator.swift */,
 				108 /* StorageManager.swift */,
 				113 /* VideoRecorder.swift */,
@@ -164,7 +167,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1520;
-				LastUpgradeCheck = 1520;
+				LastUpgradeCheck = 2620;
 				TargetAttributes = {
 					600 = {
 						CreatedOnToolsVersion = 15.2;
@@ -214,6 +217,7 @@
 				007 /* CaptureCoordinator.swift in Sources */,
 				008 /* StorageManager.swift in Sources */,
 				009 /* SessionModels.swift in Sources */,
+				6C937C002F455448002233EB /* RawCaptureSession.swift in Sources */,
 				010 /* ShareSheet.swift in Sources */,
 				012 /* BLEManager.swift in Sources */,
 				013 /* VideoRecorder.swift in Sources */,
@@ -258,6 +262,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 767R6QZE3F;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -281,6 +286,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -321,6 +327,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 767R6QZE3F;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -337,6 +344,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				VALIDATE_PRODUCT = YES;
 			};
@@ -349,7 +357,6 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 767R6QZE3F;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = StackCapture/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = StackCapture;
@@ -380,7 +387,6 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 767R6QZE3F;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = StackCapture/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = StackCapture;

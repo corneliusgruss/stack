@@ -10,10 +10,12 @@
     <string>StackCapture needs camera access to record RGB video for demonstration collection.</string>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>StackCapture connects to the encoder glove via Bluetooth to read joint angles during recording.</string>
+    <key>NSMotionUsageDescription</key>
+    <string>StackCapture records IMU data (accelerometer and gyroscope) during capture for SLAM processing.</string>
     <key>UIRequiredDeviceCapabilities</key>
     <array>
-        <string>arkit</string>
-        <string>lidar</string>
+        <string>accelerometer</string>
+        <string>gyroscope</string>
     </array>
     <key>UILaunchScreen</key>
     <dict>

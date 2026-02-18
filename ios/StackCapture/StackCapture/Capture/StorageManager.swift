@@ -29,14 +29,16 @@ actor StorageManager {
         try data.jpegData.write(to: rgbURL)
         rgbCount = data.rgbIndex + 1
 
-        // Add pose with depth point
-        let pose = PoseFrame(
-            timestamp: data.timestamp,
-            rgbIndex: data.rgbIndex,
-            depth: data.depth,
-            transform: data.transform
-        )
-        poses.append(pose)
+        // Add pose (only if transform is available — ARKit mode)
+        if let transform = data.transform {
+            let pose = PoseFrame(
+                timestamp: data.timestamp,
+                rgbIndex: data.rgbIndex,
+                depth: data.depth,
+                transform: transform
+            )
+            poses.append(pose)
+        }
     }
 
     // MARK: - Finalization
@@ -48,15 +50,19 @@ actor StorageManager {
         iosVersion: String,
         encoderReadings: [EncoderReading],
         bleConnected: Bool,
-        hasVideo: Bool
+        hasVideo: Bool,
+        captureSource: CaptureSource,
+        imuReadings: [IMUReading] = [],
+        cameraIntrinsics: CameraIntrinsics? = nil
     ) async throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+
         // Sort poses by rgbIndex (async processing may have written them out of order)
         let sortedPoses = poses.sorted { $0.rgbIndex < $1.rgbIndex }
 
-        // Write poses.json
+        // Write poses.json (empty array for raw capture — filled by SLAM later)
         let posesURL = sessionURL.appendingPathComponent("poses.json")
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let posesData = try encoder.encode(sortedPoses)
         try posesData.write(to: posesURL)
 
@@ -65,6 +71,19 @@ actor StorageManager {
             let encodersURL = sessionURL.appendingPathComponent("encoders.json")
             let encoderData = try encoder.encode(encoderReadings)
             try encoderData.write(to: encodersURL)
+        }
+
+        // Write imu.json (if any readings — ultrawide/raw mode)
+        if !imuReadings.isEmpty {
+            let imuURL = sessionURL.appendingPathComponent("imu.json")
+            let imuData = try encoder.encode(imuReadings)
+            try imuData.write(to: imuURL)
+        }
+
+        // Write calib.txt (camera intrinsics for SLAM)
+        if let intrinsics = cameraIntrinsics {
+            let calibURL = sessionURL.appendingPathComponent("calib.txt")
+            try intrinsics.calibString.write(to: calibURL, atomically: true, encoding: .utf8)
         }
 
         // Calculate duration
@@ -82,7 +101,11 @@ actor StorageManager {
             durationSeconds: duration,
             encoderCount: encoderReadings.isEmpty ? nil : encoderReadings.count,
             bleConnected: bleConnected,
-            hasVideo: hasVideo
+            hasVideo: hasVideo,
+            captureSource: captureSource,
+            slamProcessed: captureSource == .iphoneArkit ? nil : false,
+            cameraIntrinsics: cameraIntrinsics,
+            imuCount: imuReadings.isEmpty ? nil : imuReadings.count
         )
 
         let metadataURL = sessionURL.appendingPathComponent("metadata.json")

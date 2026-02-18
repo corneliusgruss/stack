@@ -1,42 +1,36 @@
 import SwiftUI
-import ARKit
 import AVFoundation
 import CoreMedia
 
 struct CaptureView: View {
-    @StateObject private var arManager = ARSessionManager()
     @StateObject private var captureCoordinator = CaptureCoordinator()
     @StateObject private var bleManager = BLEManager()
+    @StateObject private var rawSession = RawCaptureSession()
     @State private var showingSessions = false
-    @State private var arCoordinator: ARSessionCoordinator?
 
     var body: some View {
         ZStack {
-            // Camera preview (full screen) — lightweight AVSampleBufferDisplayLayer, no RealityKit
+            // Camera preview (full screen)
             PixelBufferPreviewView(coordinator: captureCoordinator)
                 .ignoresSafeArea()
-
-            // Depth crosshair at center
-            DepthCrosshair()
 
             // Landscape overlay
             VStack(spacing: 0) {
                 // Top bar
                 HStack(alignment: .top) {
-                    // Top-left: tracking status + BLE status
+                    // Top-left: camera status + BLE status
                     VStack(alignment: .leading, spacing: 6) {
-                        TrackingStatusView(state: arManager.trackingState)
+                        CameraStatusView(status: rawSession.cameraStatus)
                         BLEStatusView(state: bleManager.connectionState)
                     }
 
                     Spacer()
 
-                    // Top-right: encoder values + depth + sessions button
+                    // Top-right: encoder values + sessions button
                     HStack(spacing: 12) {
                         EncoderValuesView(
                             values: bleManager.encoderValues,
-                            hasError: bleManager.hasError,
-                            depthPoint: captureCoordinator.currentDepthPoint
+                            hasError: bleManager.hasError
                         )
 
                         Button {
@@ -102,7 +96,11 @@ struct CaptureView: View {
         }
         .onAppear {
             captureCoordinator.bleManager = bleManager
-            setupARSession()
+            captureCoordinator.rawCaptureSession = rawSession
+            rawSession.onFrame = { pixelBuffer, timestamp in
+                captureCoordinator.handleFrame(pixelBuffer, timestamp: timestamp)
+            }
+            rawSession.startSession()
         }
         .sheet(isPresented: $showingSessions) {
             SessionListView()
@@ -116,21 +114,6 @@ struct CaptureView: View {
                 Text(error.localizedDescription)
             }
         }
-    }
-
-    private func setupARSession() {
-        let coordinator = ARSessionCoordinator(
-            onFrame: { frame in
-                captureCoordinator.handleFrame(frame)
-            },
-            onTrackingStateChange: { state in
-                Task { @MainActor in
-                    arManager.trackingState = state
-                }
-            }
-        )
-        arCoordinator = coordinator
-        arManager.startSession(coordinator: coordinator)
     }
 
     private func toggleRecording() {
@@ -148,7 +131,35 @@ struct CaptureView: View {
     }
 }
 
-// MARK: - Pixel Buffer Preview (replaces ARView/RealityKit)
+// MARK: - Camera Status
+
+struct CameraStatusView: View {
+    let status: RawCaptureSession.CameraStatus
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 8, height: 8)
+            Text(status.rawValue)
+                .font(.caption)
+                .foregroundColor(.white)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.ultraThinMaterial, in: Capsule())
+    }
+
+    private var statusColor: Color {
+        switch status {
+        case .running: return .green
+        case .notStarted: return .yellow
+        case .failed: return .red
+        }
+    }
+}
+
+// MARK: - Pixel Buffer Preview
 
 struct PixelBufferPreviewView: UIViewRepresentable {
     let coordinator: CaptureCoordinator
@@ -188,7 +199,6 @@ class PreviewDisplayView: UIView {
         displayLayer.frame = bounds
     }
 
-    /// Display a pixel buffer from ARKit. Can be called from any thread.
     func displayPixelBuffer(_ pixelBuffer: CVPixelBuffer) {
         guard let sampleBuffer = Self.makeSampleBuffer(from: pixelBuffer) else { return }
         DispatchQueue.main.async { [weak self] in
@@ -231,27 +241,6 @@ class PreviewDisplayView: UIView {
     }
 }
 
-// MARK: - Depth Crosshair
-
-struct DepthCrosshair: View {
-    var body: some View {
-        ZStack {
-            // Horizontal line
-            Rectangle()
-                .fill(.white.opacity(0.6))
-                .frame(width: 20, height: 1)
-            // Vertical line
-            Rectangle()
-                .fill(.white.opacity(0.6))
-                .frame(width: 1, height: 20)
-            // Center dot
-            Circle()
-                .stroke(.white.opacity(0.6), lineWidth: 1)
-                .frame(width: 6, height: 6)
-        }
-    }
-}
-
 // MARK: - BLE Status
 
 struct BLEStatusView: View {
@@ -284,13 +273,11 @@ struct BLEStatusView: View {
 struct EncoderValuesView: View {
     let values: [Float]
     let hasError: Bool
-    let depthPoint: Float?
 
     private let labels = ["iMCP", "iPIP", "3MCP", "3PIP"]
 
     var body: some View {
         HStack(spacing: 8) {
-            // Encoder angles
             ForEach(0..<4, id: \.self) { i in
                 VStack(spacing: 1) {
                     Text(labels[i])
@@ -301,76 +288,10 @@ struct EncoderValuesView: View {
                         .foregroundColor(values[i] < 0 ? .red : .white)
                 }
             }
-
-            // Depth point
-            if let depth = depthPoint {
-                Divider()
-                    .frame(height: 24)
-                    .background(.white.opacity(0.3))
-                VStack(spacing: 1) {
-                    Text("Depth")
-                        .font(.system(size: 8, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.7))
-                    Text(String(format: "%.2fm", depth))
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(depthColor(depth))
-                }
-            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func depthColor(_ d: Float) -> Color {
-        if d.isNaN || d <= 0 { return .red }
-        if d >= 0.1 && d <= 1.0 { return .green }
-        return .yellow
-    }
-}
-
-// MARK: - Tracking Status
-
-struct TrackingStatusView: View {
-    let state: ARCamera.TrackingState
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 8, height: 8)
-            Text(statusText)
-                .font(.caption)
-                .foregroundColor(.white)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(.ultraThinMaterial, in: Capsule())
-    }
-
-    private var statusColor: Color {
-        switch state {
-        case .normal: return .green
-        case .limited: return .yellow
-        case .notAvailable: return .red
-        }
-    }
-
-    private var statusText: String {
-        switch state {
-        case .normal:
-            return "Tracking"
-        case .limited(let reason):
-            switch reason {
-            case .excessiveMotion: return "Too fast"
-            case .insufficientFeatures: return "Low features"
-            case .initializing: return "Initializing"
-            case .relocalizing: return "Relocalizing"
-            @unknown default: return "Limited"
-            }
-        case .notAvailable:
-            return "Not available"
-        }
     }
 }
 
