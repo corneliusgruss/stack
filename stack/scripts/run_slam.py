@@ -1,72 +1,53 @@
 """
-Process raw capture sessions through DROID-SLAM to generate 6DoF poses.
+Process raw capture sessions through COLMAP SfM to generate 6DoF poses.
 
 For sessions captured with the ultrawide camera (no ARKit poses),
-this script runs DROID-SLAM offline to fill in poses.json.
+this script runs COLMAP offline to fill in poses.json.
 
 Usage:
     # Process a single session
-    stack-slam --session data/raw/session_2026-02-20_143000
+    python -m stack.scripts.run_slam --session data/raw/session_2026-02-17_220023
 
-    # Process all unprocessed sessions in a directory
-    stack-slam --data-dir data/raw
+    # Process all unprocessed sessions
+    python -m stack.scripts.run_slam --data-dir data/raw
 
-    # With custom calibration scale
-    stack-slam --session data/raw/session_... --scale 1.0
+    # Force reprocess
+    python -m stack.scripts.run_slam --data-dir data/raw --force
 
-Requires: droid-slam, lietorch, pytorch with CUDA
-See notebooks/run_slam.ipynb for Colab version.
+Requires: colmap (brew install colmap), pycolmap
 """
 
 import argparse
 import json
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
+from scipy.interpolate import interp1d
+from scipy.spatial.transform import Rotation, Slerp
 
-# DROID-SLAM imports are deferred to avoid import errors on machines without GPU
-DROID_AVAILABLE = False
 try:
-    import torch
-    if torch.cuda.is_available():
-        try:
-            from droid_slam import Droid
-            DROID_AVAILABLE = True
-        except ImportError:
-            pass
+    import pycolmap
 except ImportError:
-    pass
+    print("ERROR: pycolmap not installed. Run: pip install pycolmap")
+    sys.exit(1)
 
 
-def load_intrinsics(session_dir: Path) -> np.ndarray:
-    """Load camera intrinsics from calib.txt.
-
-    Returns [fx, fy, cx, cy] array. If calib.txt is missing,
-    DROID-SLAM can auto-calibrate (opt_intr=True).
-    """
-    calib_file = session_dir / "calib.txt"
-    if not calib_file.exists():
-        return None
-
-    parts = calib_file.read_text().strip().split()
-    intrinsics = np.array([float(x) for x in parts[:4]], dtype=np.float64)
-    return intrinsics
-
-
-def load_rgb_paths(session_dir: Path) -> list[Path]:
-    """Load sorted RGB frame paths from session."""
-    rgb_dir = session_dir / "rgb"
-    if not rgb_dir.exists():
-        raise FileNotFoundError(f"No rgb/ directory in {session_dir}")
-    paths = sorted(rgb_dir.glob("*.jpg"))
-    if not paths:
-        raise FileNotFoundError(f"No JPG files in {rgb_dir}")
-    return paths
+def check_colmap():
+    """Verify COLMAP CLI is installed."""
+    result = subprocess.run(
+        ["colmap", "-h"], capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print("ERROR: colmap not found. Install with: brew install colmap")
+        sys.exit(1)
 
 
 def load_metadata(session_dir: Path) -> dict:
-    """Load session metadata."""
     meta_file = session_dir / "metadata.json"
     if not meta_file.exists():
         raise FileNotFoundError(f"No metadata.json in {session_dir}")
@@ -74,235 +55,242 @@ def load_metadata(session_dir: Path) -> dict:
         return json.load(f)
 
 
-def check_session_needs_slam(session_dir: Path) -> bool:
-    """Check if a session needs SLAM processing."""
+def needs_processing(session_dir: Path) -> bool:
     meta = load_metadata(session_dir)
-    source = meta.get("captureSource", "iphone_arkit")
-    if source == "iphone_arkit":
-        return False  # ARKit already provides poses
-    processed = meta.get("slamProcessed", False)
-    if processed:
-        return False  # Already processed
-    return True
+    if meta.get("captureSource", "iphone_arkit") == "iphone_arkit":
+        return False
+    return not meta.get("slamProcessed", False)
 
 
-def run_droid_slam(
-    session_dir: Path,
-    scale_factor: float = 1.0,
-    opt_intr: bool = False,
-    stride: int = 1,
-) -> np.ndarray:
-    """Run DROID-SLAM on a session's RGB frames.
+def run_colmap_sfm(session_dir: Path, subsample: int = 6) -> tuple[dict, object]:
+    """Run COLMAP SfM on a session. Returns (sub_poses, reconstruction)."""
+    rgb_dir = session_dir / "rgb"
+    frame_paths = sorted(rgb_dir.glob("*.jpg"))
+    n_total = len(frame_paths)
 
-    Args:
-        session_dir: Path to session directory.
-        scale_factor: Metric scale correction factor.
-        opt_intr: Whether to optimize intrinsics (use if no calib.txt).
-        stride: Frame stride (1 = every frame, 2 = every other, etc.)
+    # Subsample frames
+    sub_indices = list(range(0, n_total, subsample))
+    if sub_indices[-1] != n_total - 1:
+        sub_indices.append(n_total - 1)
 
-    Returns:
-        (N, 4, 4) array of SE3 pose matrices.
-    """
-    if not DROID_AVAILABLE:
-        raise RuntimeError(
-            "DROID-SLAM not available. Install with:\n"
-            "  pip install droid-slam\n"
-            "Requires CUDA GPU. See notebooks/run_slam.ipynb for Colab."
+    # Work in temp directory for speed
+    work = Path(tempfile.mkdtemp(prefix="colmap_"))
+    try:
+        (work / "images").mkdir()
+        (work / "sparse").mkdir()
+
+        # Copy subsampled frames
+        for new_idx, orig_idx in enumerate(sub_indices):
+            shutil.copy2(frame_paths[orig_idx], work / "images" / f"{new_idx:06d}.jpg")
+
+        db = work / "database.db"
+        env = os.environ.copy()
+
+        # Feature extraction
+        result = subprocess.run([
+            "colmap", "feature_extractor",
+            "--database_path", str(db),
+            "--image_path", str(work / "images"),
+            "--ImageReader.camera_model", "SIMPLE_RADIAL",
+            "--ImageReader.single_camera", "1",
+            "--SiftExtraction.max_image_size", "480",
+            "--SiftExtraction.max_num_features", "4096",
+        ], capture_output=True, text=True, env=env)
+        if result.returncode != 0:
+            raise RuntimeError(f"Feature extraction failed: {result.stderr[-300:]}")
+
+        # Sequential matching
+        result = subprocess.run([
+            "colmap", "sequential_matcher",
+            "--database_path", str(db),
+            "--SequentialMatching.overlap", "10",
+            "--SequentialMatching.loop_detection", "0",
+        ], capture_output=True, text=True, env=env)
+        if result.returncode != 0:
+            raise RuntimeError(f"Sequential matching failed: {result.stderr[-300:]}")
+
+        # Mapper
+        result = subprocess.run([
+            "colmap", "mapper",
+            "--database_path", str(db),
+            "--image_path", str(work / "images"),
+            "--output_path", str(work / "sparse"),
+            "--Mapper.init_min_num_inliers", "50",
+            "--Mapper.ba_refine_focal_length", "1",
+            "--Mapper.ba_refine_extra_params", "1",
+        ], capture_output=True, text=True, env=env)
+        if result.returncode != 0:
+            raise RuntimeError(f"Mapper failed: {result.stderr[-300:]}")
+
+        # Find best reconstruction
+        recon_dirs = sorted((work / "sparse").iterdir())
+        if not recon_dirs:
+            raise RuntimeError("No reconstruction produced")
+
+        best_dir = max(
+            recon_dirs,
+            key=lambda d: pycolmap.Reconstruction(str(d)).num_images()
+            if (d / "images.bin").exists() else 0
         )
+        recon = pycolmap.Reconstruction(str(best_dir))
 
-    import torch
-    from droid_slam import Droid
-    import cv2
+        # Extract poses
+        sub_poses = {}
+        for img_id, img in recon.images.items():
+            sub_idx = int(Path(img.name).stem)
+            orig_idx = sub_indices[sub_idx]
+            cfw = img.cam_from_world()
+            R_cw = np.array(cfw.rotation.matrix())
+            t_cw = np.array(cfw.translation)
+            R_wc = R_cw.T
+            t_wc = -R_wc @ t_cw
+            pose = np.eye(4)
+            pose[:3, :3] = R_wc
+            pose[:3, 3] = t_wc
+            sub_poses[orig_idx] = pose
 
-    rgb_paths = load_rgb_paths(session_dir)
-    intrinsics = load_intrinsics(session_dir)
+        return sub_poses, recon, n_total, sub_indices
 
-    if intrinsics is None:
-        print("No calib.txt found — enabling intrinsic optimization")
-        opt_intr = True
-        # Default ultrawide estimate for 480x360
-        intrinsics = np.array([300.0, 300.0, 240.0, 180.0])
-
-    print(f"Processing {len(rgb_paths)} frames from {session_dir.name}")
-    print(f"Intrinsics: fx={intrinsics[0]:.1f} fy={intrinsics[1]:.1f} cx={intrinsics[2]:.1f} cy={intrinsics[3]:.1f}")
-
-    # Initialize DROID-SLAM
-    droid = Droid(
-        image_size=[360, 480],  # H, W
-        intrinsics=intrinsics,
-        opt_intr=opt_intr,
-        buffer=512,
-        beta=0.3,
-    )
-
-    # Feed frames
-    for i, path in enumerate(rgb_paths):
-        if i % stride != 0:
-            continue
-        image = cv2.imread(str(path))
-        if image is None:
-            print(f"Warning: Could not read {path}")
-            continue
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        timestamp = float(i) / 60.0  # Approximate timestamp
-
-        droid.track(timestamp, image)
-
-        if (i + 1) % 100 == 0:
-            print(f"  Processed {i + 1}/{len(rgb_paths)} frames")
-
-    # Run global bundle adjustment
-    print("Running global bundle adjustment...")
-    traj = droid.terminate()  # Returns (N, 7) [tx, ty, tz, qx, qy, qz, qw]
-
-    # Convert to 4x4 pose matrices
-    from scipy.spatial.transform import Rotation
-
-    num_poses = traj.shape[0]
-    poses_4x4 = np.zeros((num_poses, 4, 4), dtype=np.float64)
-    for i in range(num_poses):
-        t = traj[i, :3]
-        q = traj[i, 3:]  # [qx, qy, qz, qw]
-        R = Rotation.from_quat(q).as_matrix()
-        poses_4x4[i, :3, :3] = R
-        poses_4x4[i, :3, 3] = t * scale_factor
-        poses_4x4[i, 3, 3] = 1.0
-
-    print(f"Got {num_poses} poses from DROID-SLAM")
-    return poses_4x4
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
-def apply_scale_correction(
-    poses: np.ndarray,
-    known_distance_slam: float,
-    known_distance_real: float,
-) -> np.ndarray:
-    """Apply metric scale correction to SLAM poses.
+def interpolate_poses(sub_poses: dict, n_total: int) -> tuple[list, np.ndarray]:
+    """Interpolate subsampled poses to full framerate."""
+    reg_indices = sorted(sub_poses.keys())
+    key_idx = np.array(reg_indices, dtype=float)
+    key_t = np.array([sub_poses[i][:3, 3] for i in reg_indices])
+    key_R = Rotation.from_matrix([sub_poses[i][:3, :3] for i in reg_indices])
 
-    Monocular SLAM has arbitrary scale. Use a known distance
-    (e.g., measured size of a stacking cube visible in the scene)
-    to compute the correction factor.
+    first, last = reg_indices[0], reg_indices[-1]
+    all_idx = np.arange(first, last + 1, dtype=float)
 
-    Args:
-        poses: (N, 4, 4) pose matrices.
-        known_distance_slam: Distance in SLAM coordinates.
-        known_distance_real: True distance in meters.
+    interp_x = interp1d(key_idx, key_t[:, 0])
+    interp_y = interp1d(key_idx, key_t[:, 1])
+    interp_z = interp1d(key_idx, key_t[:, 2])
+    slerp = Slerp(key_idx, key_R)
 
-    Returns:
-        Scale-corrected poses.
-    """
-    scale = known_distance_real / known_distance_slam
-    corrected = poses.copy()
-    corrected[:, :3, 3] *= scale
-    print(f"Scale correction: {scale:.4f} (SLAM {known_distance_slam:.4f} -> real {known_distance_real:.4f})")
-    return corrected
-
-
-def write_poses(session_dir: Path, poses_4x4: np.ndarray):
-    """Write SLAM poses to session's poses.json in StackCapture format."""
-    rgb_paths = load_rgb_paths(session_dir)
-
-    # Build poses.json entries matching existing format
     poses_list = []
-    for i in range(min(len(poses_4x4), len(rgb_paths))):
-        # Use frame index as approximate timestamp
-        timestamp = float(i) / 60.0
-
+    for idx in all_idx:
+        i = int(idx)
+        t = np.array([interp_x(idx), interp_y(idx), interp_z(idx)])
+        R = slerp(idx).as_matrix()
+        pose = np.eye(4)
+        pose[:3, :3] = R
+        pose[:3, 3] = t
         poses_list.append({
-            "timestamp": timestamp,
+            "timestamp": float(i) / 60.0,
             "rgbIndex": i,
-            "depth": None,  # No depth from monocular SLAM (could use DROID depth maps)
-            "transform": poses_4x4[i].tolist(),
+            "depth": None,
+            "transform": pose.tolist(),
         })
 
-    # Write poses.json
-    poses_file = session_dir / "poses.json"
-    with open(poses_file, "w") as f:
-        json.dump(poses_list, f, indent=2)
-    print(f"Wrote {len(poses_list)} poses to {poses_file}")
-
-    # Update metadata
-    meta_file = session_dir / "metadata.json"
-    with open(meta_file) as f:
-        meta = json.load(f)
-    meta["slamProcessed"] = True
-    meta["poseCount"] = len(poses_list)
-    with open(meta_file, "w") as f:
-        json.dump(meta, f, indent=2)
-    print(f"Updated metadata: slamProcessed=true")
+    return poses_list
 
 
-def process_session(
-    session_dir: Path,
-    scale_factor: float = 1.0,
-    force: bool = False,
-):
-    """Full pipeline: check → run SLAM → write poses.
-
-    Args:
-        session_dir: Path to session directory.
-        scale_factor: Metric scale correction.
-        force: Re-process even if already processed.
-    """
+def process_session(session_dir: Path, force: bool = False, subsample: int = 6):
+    """Full pipeline: COLMAP SfM → interpolate → write poses.json."""
     session_dir = Path(session_dir)
 
-    if not force and not check_session_needs_slam(session_dir):
+    if not force and not needs_processing(session_dir):
         meta = load_metadata(session_dir)
         source = meta.get("captureSource", "iphone_arkit")
         if source == "iphone_arkit":
-            print(f"Skipping {session_dir.name}: ARKit session (already has poses)")
+            print(f"  {session_dir.name}: ARKit session, skipping")
         else:
-            print(f"Skipping {session_dir.name}: already SLAM processed")
-        return
+            print(f"  {session_dir.name}: already processed, skipping")
+        return True
 
-    print(f"\n{'='*60}")
-    print(f"Processing: {session_dir.name}")
-    print(f"{'='*60}")
+    print(f"  {session_dir.name}: processing...", end=" ", flush=True)
 
-    poses = run_droid_slam(session_dir, scale_factor=scale_factor)
-    write_poses(session_dir, poses)
-    print(f"Done: {session_dir.name}")
+    try:
+        sub_poses, recon, n_total, sub_indices = run_colmap_sfm(session_dir, subsample)
+    except RuntimeError as e:
+        print(f"FAILED — {e}")
+        return False
 
+    if len(sub_poses) < 3:
+        print(f"FAILED — only {len(sub_poses)} images registered")
+        return False
 
-def find_sessions(data_dir: Path) -> list[Path]:
-    """Find all session directories in a data directory."""
-    data_dir = Path(data_dir)
-    sessions = sorted([
-        d for d in data_dir.iterdir()
-        if d.is_dir() and d.name.startswith("session_")
-    ])
-    return sessions
+    # Interpolate to 60fps
+    poses_list = interpolate_poses(sub_poses, n_total)
+
+    # Write poses.json
+    with open(session_dir / "poses.json", "w") as f:
+        json.dump(poses_list, f, indent=2)
+
+    # Write calib.txt from COLMAP intrinsics
+    for cam_id, cam in recon.cameras.items():
+        p = cam.params
+        (session_dir / "calib.txt").write_text(
+            f"{p[0]:.4f} {p[0]:.4f} {p[1]:.4f} {p[2]:.4f}"
+        )
+        break
+
+    # Update metadata
+    meta = load_metadata(session_dir)
+    meta["slamProcessed"] = True
+    meta["poseCount"] = len(poses_list)
+    with open(session_dir / "metadata.json", "w") as f:
+        json.dump(meta, f, indent=2)
+
+    n_keyframes = recon.num_images()
+    print(f"OK — {n_keyframes}/{len(sub_indices)} keyframes → {len(poses_list)} poses")
+    return True
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Process raw capture sessions through DROID-SLAM"
+        description="Process capture sessions through COLMAP SfM"
     )
     parser.add_argument(
         "--session", type=str, default=None,
-        help="Path to a single session directory"
+        help="Path to a single session directory",
     )
     parser.add_argument(
         "--data-dir", type=str, default=None,
-        help="Process all unprocessed sessions in this directory"
+        help="Process all unprocessed sessions in this directory",
     )
     parser.add_argument(
-        "--scale", type=float, default=1.0,
-        help="Metric scale correction factor"
+        "--subsample", type=int, default=6,
+        help="Frame subsample rate (default: 6, i.e. 60fps→10fps)",
     )
     parser.add_argument(
         "--force", action="store_true",
-        help="Re-process even if already processed"
+        help="Re-process even if already processed",
     )
     args = parser.parse_args()
 
+    check_colmap()
+
     if args.session:
-        process_session(Path(args.session), scale_factor=args.scale, force=args.force)
+        process_session(Path(args.session), force=args.force, subsample=args.subsample)
     elif args.data_dir:
-        sessions = find_sessions(Path(args.data_dir))
-        print(f"Found {len(sessions)} sessions in {args.data_dir}")
-        for session_dir in sessions:
-            process_session(session_dir, scale_factor=args.scale, force=args.force)
+        data_dir = Path(args.data_dir)
+        sessions = sorted([
+            d for d in data_dir.iterdir()
+            if d.is_dir() and d.name.startswith("session_")
+        ])
+        print(f"Found {len(sessions)} sessions in {data_dir}")
+        ok = 0
+        fail = 0
+        skip = 0
+        for s in sessions:
+            meta = load_metadata(s)
+            if not args.force and not needs_processing(s):
+                skip += 1
+                source = meta.get("captureSource", "iphone_arkit")
+                if source == "iphone_arkit":
+                    print(f"  {s.name}: ARKit, skipping")
+                else:
+                    print(f"  {s.name}: already processed, skipping")
+                continue
+            if process_session(s, force=args.force, subsample=args.subsample):
+                ok += 1
+            else:
+                fail += 1
+        print(f"\nDone: {ok} processed, {fail} failed, {skip} skipped")
     else:
         parser.print_help()
         sys.exit(1)

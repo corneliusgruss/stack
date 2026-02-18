@@ -10,49 +10,30 @@ Proprioceptive data collection and diffusion policy for dexterous manipulation.
 ## Current Phase
 **Phase 1: Hardware** - Designing and 3D printing the instrumented glove
 
-### Status (2026-02-17)
+### Status (2026-02-18)
 - [x] Gripper mechanical design (DESIGN.md)
 - [x] Electronics ordered (ESP32, AS5600 encoders, TCA9548A multiplexer)
-- [x] ESP32 firmware written (Serial + BLE dual output)
+- [x] ESP32 firmware written (Serial + BLE dual output, per-channel encoder invert)
 - [x] Python data collection pipeline written
 - [x] Diffusion policy fully implemented (ResNet18 + ConditionalUnet1D, matches Chi et al.)
-- [x] ARKit iPhone app implemented & tested (ios/StackCapture)
+- [x] StackCapture app: ultrawide-only (ARKit removed), BLE, landscape, IMU
 - [x] Python session loader (stack/data/iphone_loader.py) — camera-agnostic SessionLoader
 - [x] Visualization tools (stack/viz/)
 - [x] iPhone capture verified: 60 FPS, 0% dropped frames
-- [x] Orientation confirmed correct for horizontal mount (power button up)
 - [x] ESP32 board tested (ESP32-D0WD-V3, dual core, 240 MHz, 4 MB flash)
-- [x] TCA9548A multiplexer verified on I2C bus at 0x70
-- [x] AS5600 encoder verified on mux CH0 at 0x36 — smooth angle readings at 100 Hz
 - [x] Full electronics chain validated: ESP32 → TCA9548A → AS5600 (all 4 encoders soldered + tested)
-- [x] Test magnet-to-encoder fit in joint (air gap, centering, stability)
-- [x] Printing finger joints, testing fit
-- [x] Printing palm, testing MCP joint
-- [x] StackCapture app overhauled: BLE, ultrawide, landscape, size reduction
-- [x] ESP32 BLE peripheral (50 Hz encoder notifications as "StackGlove")
-- [x] iOS BLE manager (auto-scan, auto-reconnect, live encoder display)
-- [x] Landscape orientation (volume buttons down for recording grip)
-- [x] Ultrawide camera selection (0.5x, wider FoV for hand visibility)
-- [x] Image resize to 480x360 JPEG (was 1920x1440 — 9x storage reduction)
-- [x] Full-res HEVC video recording (video.mov for papers/demos)
-- [x] Depth maps dropped (not used by UMI-FT, biggest storage hog)
-- [x] Single-point LiDAR depth (virtual ToF sensor, median of 5x5 center)
-- [x] Encoder + iPhone timestamp alignment (nearest-neighbor matching)
-- [x] Python loader updated for new session format (12D episodes)
+- [x] Glove assembly complete (3 encoders working — 1 AS5600 index_pip had pad rip off)
+- [x] 17 demo sessions collected (pick-and-place on 4 surfaces, ~25-30s each)
+- [x] COLMAP SfM pipeline: local batch processing on MacBook (replaced DROID-SLAM)
+- [x] All 17 sessions processed: poses.json + calib.txt written, slamProcessed=true
+- [x] COLMAP intrinsics: f≈183 at 480x360 (~120° FOV ultrawide confirmed)
 - [x] Training pipeline complete: synthetic data, dataset, train loop, eval, tests (16/16 pass)
 - [x] Architecture upgraded: ResNet18 visual encoder + ConditionalUnet1D (matches Diffusion Policy paper)
-- [x] Flash BLE firmware to ESP32 and verify with nRF Connect
-- [x] Build & deploy updated StackCapture to iPhone
-- [x] Camera-agnostic capture: dual mode iOS app (ARKit 1x / Ultrawide SLAM)
-- [x] RawCaptureSession: AVFoundation ultrawide capture + CMMotionManager IMU (200Hz)
-- [x] Camera intrinsics extraction + calib.txt output
-- [x] DROID-SLAM pipeline: CLI script + Colab notebook
-- [x] Python SessionLoader: handles ARKit, ultrawide, and future stereo sessions
-- [x] All 16 existing tests pass with new SessionLoader (backward compat via iPhoneSession alias)
-- [ ] **IN PROGRESS:** Full glove assembly
-- [ ] End-to-end test: record session with glove + load in Python
-- [ ] First ultrawide capture test + DROID-SLAM processing
+- [x] Sessions uploaded to Google Drive (BU school account, bu:stack_sessions/)
+- [ ] **NEXT:** First training run on real data (Colab Pro GPU)
+- [ ] End-to-end test: load processed sessions in Python, verify training dataset
 - [ ] Scale calibration with known object
+- [ ] Replace broken AS5600 encoder (Amazon order)
 
 ## Key Differentiator
 UMI-FT captures: **pose (7D) + gripper width (1D) = 8D**
@@ -70,7 +51,7 @@ stack/
 │   ├── viz/                # Visualization tools
 │   ├── policy/             # Diffusion policy (Chi et al.)
 │   └── scripts/            # CLI: collect, train, eval, run_slam
-├── ios/                    # iPhone capture app (dual mode: ARKit + ultrawide)
+├── ios/                    # iPhone capture app (ultrawide-only, no ARKit)
 │   ├── PLAN.md             # App planning doc
 │   └── StackCapture/       # Xcode project
 ├── firmware/               # ESP32 encoder reader
@@ -82,7 +63,7 @@ stack/
 │   └── docs/               # Design diagrams (PNG)
 ├── notebooks/              # Jupyter/Colab notebooks
 │   ├── train_colab.ipynb   # Training on Colab
-│   └── run_slam.ipynb      # DROID-SLAM processing on Colab
+│   └── run_slam.ipynb      # COLMAP processing on Colab (backup, prefer local)
 ├── docs/                   # Project documentation
 │   ├── gpu_access.md       # SCC/Colab/local GPU setup guide
 │   └── gruss_me740_proposal.tex  # Symlink to approved proposal
@@ -138,13 +119,13 @@ python -m stack.scripts.run_slam --data-dir data/raw  # batch process
 - `stack/data/training_dataset.py` - PyTorch Dataset with sliding window sampling + normalization
 - `stack/scripts/train.py` - Training loop (EMA, gradient clip, cosine LR, MPS support)
 - `stack/scripts/eval.py` - Evaluation (position/rotation/joint error metrics)
-- `stack/scripts/run_slam.py` - DROID-SLAM processing for raw sessions (CLI)
-- `notebooks/run_slam.ipynb` - DROID-SLAM processing (Colab notebook)
+- `stack/scripts/run_slam.py` - COLMAP SfM processing for raw sessions (local CLI)
+- `notebooks/run_slam.ipynb` - COLMAP processing (Colab notebook, backup)
 - `tests/test_training_pipeline.py` - 16 integration tests (all pass)
 - `firmware/encoder_reader/encoder_reader.ino` - ESP32 firmware (Serial 100Hz + BLE 50Hz)
-- `ios/StackCapture/` - iPhone capture app (dual mode: ARKit 1x / Ultrawide SLAM)
+- `ios/StackCapture/` - iPhone capture app (ultrawide-only, BLE, landscape)
 - `ios/StackCapture/.../Capture/RawCaptureSession.swift` - AVFoundation ultrawide capture + IMU
-- `ios/StackCapture/.../Capture/CaptureCoordinator.swift` - Dual-mode capture orchestration
+- `ios/StackCapture/.../Capture/CaptureCoordinator.swift` - Ultrawide capture orchestration
 - `ios/StackCapture/.../BLE/BLEManager.swift` - CoreBluetooth manager for StackGlove
 - `ios/StackCapture/.../Capture/VideoRecorder.swift` - HEVC video recorder
 - `configs/default.yaml` - Training configuration
@@ -220,33 +201,42 @@ session_YYYY-MM-DD_HHMMSS/
 
 **metadata.json additions (v3):**
 - `captureSource`: `"iphone_arkit"` | `"iphone_ultrawide"` | `"stereo_usb"`
-- `slamProcessed`: `false` until DROID-SLAM fills poses.json (null for ARKit)
+- `slamProcessed`: `false` until COLMAP fills poses.json
 - `cameraIntrinsics`: `{fx, fy, cx, cy}` (scaled to 480x360)
 - `imuCount`: number of IMU readings
 
-**Capture modes:**
-- **ARKit 1x**: Wide camera, ARKit provides poses + LiDAR depth. Start here.
-- **Ultrawide SLAM**: 120° FOV ultrawide, poses from DROID-SLAM, IMU recorded. Better for wrist mount.
+**Capture mode:** Ultrawide only (120° FOV, poses from COLMAP SfM, IMU recorded)
+
+**Processing pipeline:**
+1. Capture on iPhone (ultrawide + BLE encoders)
+2. Transfer sessions to `data/raw/`
+3. `python -m stack.scripts.run_slam --data-dir data/raw` (COLMAP, local MacBook)
+4. Upload processed sessions to Google Drive
+5. Train on Colab Pro (GPU)
 
 **Storage:** ~69 MB/min (was ~600 MB/min). 50 demos of 30s each = ~1.7 GB.
 
 ## Session Log
 
+### 2026-02-18 (Tuesday)
+- Collected 17 demo sessions with glove (pick-and-place, 5 sequences × 4 surfaces)
+- Attempted DROID-SLAM on Colab: lietorch/pytorch_scatter build times out, GPU SIFT crashes
+- Switched to COLMAP SfM — pip-installable, no GPU needed, runs locally
+- Processed all 17 sessions locally on MacBook (~10 min each): `python -m stack.scripts.run_slam --data-dir data/raw`
+- Results: 17/17 OK, 793–2970 poses per session, f≈183 (120° ultrawide confirmed)
+- Pipeline: subsample 60fps→10fps, COLMAP SIFT+sequential matching+mapper, Slerp interpolation back to 60fps
+- Sessions uploaded to Google Drive (BU school account via rclone, zipped, 1.7GB total)
+- Removed ARKit mode from iOS app entirely (ultrawide-only now)
+- Firmware: added per-channel encoder invert (index=false, three-finger=true)
+- **Next:** First training run on real data (Colab Pro), scale calibration
+
 ### 2026-02-17 (Monday)
-- Built camera-agnostic capture pipeline (Track B from DROID-SLAM plan)
-- iOS app now has dual capture modes: "ARKit 1x" and "Ultrawide SLAM" with toggle
-- New `RawCaptureSession.swift`: AVFoundation ultrawide capture (120° FOV, no ARKit)
-- CMMotionManager IMU recording at 200 Hz (accel + gyro → imu.json)
-- Camera intrinsics extraction from AVCaptureDevice format metadata → calib.txt
-- `CaptureCoordinator` updated for dual mode: handles frames from ARKit OR raw session
-- `StorageManager` writes imu.json, calib.txt, captureSource, slamProcessed in metadata
-- `SessionModels.swift`: added CaptureSource enum, CameraIntrinsics, IMUReading
-- Created `stack/scripts/run_slam.py` (CLI) + `notebooks/run_slam.ipynb` (Colab)
-- DROID-SLAM pipeline: load frames → track → global BA → scale correction → write poses.json
-- Python `SessionLoader` (renamed from iPhoneSession, alias kept for backward compat)
-- Loader handles captureSource, validates slamProcessed, loads imu.json + calib.txt
-- All 16 existing tests pass — full backward compatibility confirmed
-- **Next:** Build & deploy updated app, test ultrawide capture, first SLAM run on Colab
+- Built camera-agnostic capture pipeline
+- iOS app: ultrawide capture (RawCaptureSession.swift) + CMMotionManager IMU at 200Hz
+- Removed ARKit dependency: simpler, no dual-mode complexity
+- Python SessionLoader (renamed from iPhoneSession, backward compat alias kept)
+- All 16 existing tests pass
+- **Next:** Collect demos, process with SLAM
 
 ### 2026-02-16 (Sunday)
 - Major StackCapture app overhaul: BLE, ultrawide, landscape, size reduction
