@@ -1,12 +1,12 @@
 #!/bin/bash -l
 
-#$ -N stack_train
+#$ -N stack_train_v2
 #$ -pe omp 4
 #$ -l gpus=1
 #$ -l gpu_c=7.0
-#$ -l h_rt=6:00:00
+#$ -l h_rt=12:00:00
 #$ -j y
-#$ -o /usr3/graduate/cgruss/stack/outputs/train.log
+#$ -o /usr3/graduate/cgruss/stack/outputs/train_v2.log
 #$ -cwd
 
 module load miniconda
@@ -26,7 +26,7 @@ echo "==="
 python -m stack.scripts.train \
     --config configs/default.yaml \
     --data-dir data/raw \
-    --output-dir outputs/real_v1 \
+    --output-dir outputs/real_v2 \
     --device cuda
 
 echo "=== Job finished at $(date) ==="
