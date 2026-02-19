@@ -48,6 +48,9 @@ data/models/*
 !data/processed/.gitkeep
 !data/models/.gitkeep
 
+# Training outputs (checkpoints, eval artifacts)
+outputs/
+
 # Logs
 logs/
 *.log
