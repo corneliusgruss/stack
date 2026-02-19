@@ -165,12 +165,21 @@ class CaptureCoordinator: ObservableObject {
 
     private func zipSession(at sessionURL: URL) async {
         let fm = FileManager.default
-        let zipURL = sessionURL.deletingLastPathComponent()
-            .appendingPathComponent("\(sessionURL.lastPathComponent).zip")
+        let sessionName = sessionURL.lastPathComponent
+        let parentDir = sessionURL.deletingLastPathComponent()
+        let zipURL = parentDir.appendingPathComponent("\(sessionName).zip")
+        let metadataSidecarURL = parentDir.appendingPathComponent("\(sessionName).metadata.json")
 
         // Remove existing zip if present
         try? fm.removeItem(at: zipURL)
 
+        // Copy metadata.json as sidecar (for session list display)
+        let metadataURL = sessionURL.appendingPathComponent("metadata.json")
+        if fm.fileExists(atPath: metadataURL.path) {
+            try? fm.copyItem(at: metadataURL, to: metadataSidecarURL)
+        }
+
+        // Zip the session folder
         let coordinator = NSFileCoordinator()
         var error: NSError?
 
@@ -184,11 +193,16 @@ class CaptureCoordinator: ObservableObject {
 
         if let error = error {
             print("Failed to create zip: \(error)")
+            // Clean up sidecar if zip failed
+            try? fm.removeItem(at: metadataSidecarURL)
         } else {
+            // Remove raw folder to save storage
+            try? fm.removeItem(at: sessionURL)
+
             let attrs = try? fm.attributesOfItem(atPath: zipURL.path)
             let size = (attrs?[.size] as? Int64) ?? 0
             let sizeMB = Double(size) / 1_000_000
-            print("Session zipped: \(zipURL.lastPathComponent) (\(String(format: "%.1f", sizeMB)) MB)")
+            print("Session zipped: \(zipURL.lastPathComponent) (\(String(format: "%.1f", sizeMB)) MB) — raw folder removed")
         }
     }
 

@@ -92,6 +92,13 @@ struct SessionDetailView: View {
     }
 
     private func exportSession() {
+        // If session URL is already a zip, share it directly
+        if session.url.pathExtension == "zip" {
+            shareURL = session.url
+            return
+        }
+
+        // Legacy unzipped folder — create zip on the fly
         isExporting = true
         exportError = nil
 

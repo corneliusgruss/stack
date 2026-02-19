@@ -64,10 +64,10 @@ struct SessionListView: View {
 
         for session in sessionsToDelete {
             try? FileManager.default.removeItem(at: session.url)
-            // Also remove the associated zip if it exists
-            let zipURL = session.url.deletingLastPathComponent()
-                .appendingPathComponent("\(session.id).zip")
-            try? FileManager.default.removeItem(at: zipURL)
+            // Also remove the metadata sidecar if it exists
+            let sidecarURL = session.url.deletingLastPathComponent()
+                .appendingPathComponent("\(session.id).metadata.json")
+            try? FileManager.default.removeItem(at: sidecarURL)
         }
 
         sessions.remove(atOffsets: offsets)
@@ -82,42 +82,44 @@ struct SessionListView: View {
         do {
             let contents = try fm.contentsOfDirectory(
                 at: documentsURL,
-                includingPropertiesForKeys: [.isDirectoryKey, .totalFileAllocatedSizeKey]
+                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .totalFileAllocatedSizeKey]
             )
 
             var sessions: [SessionInfo] = []
 
             for url in contents {
-                guard url.lastPathComponent.hasPrefix("session_") else { continue }
+                let name = url.lastPathComponent
+                guard name.hasPrefix("session_") else { continue }
 
                 var isDirectory: ObjCBool = false
-                guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory),
-                      isDirectory.boolValue else { continue }
+                fm.fileExists(atPath: url.path, isDirectory: &isDirectory)
 
-                // Load metadata
-                let metadataURL = url.appendingPathComponent("metadata.json")
-                var metadata: SessionMetadata? = nil
+                if isDirectory.boolValue {
+                    // Unzipped session folder (legacy or zip failed)
+                    let metadataURL = url.appendingPathComponent("metadata.json")
+                    let metadata = Self.loadMetadata(at: metadataURL)
+                    let size = folderSize(at: url)
 
-                if fm.fileExists(atPath: metadataURL.path) {
-                    do {
-                        let data = try Data(contentsOf: metadataURL)
-                        let decoder = JSONDecoder()
-                        decoder.dateDecodingStrategy = .iso8601
-                        metadata = try decoder.decode(SessionMetadata.self, from: data)
-                    } catch {
-                        print("Failed to load metadata for \(url.lastPathComponent): \(error)")
-                    }
+                    sessions.append(SessionInfo(
+                        id: name,
+                        url: url,
+                        metadata: metadata,
+                        folderSize: size
+                    ))
+                } else if name.hasSuffix(".zip") {
+                    // Zipped session — read sidecar metadata
+                    let sessionName = String(name.dropLast(4)) // remove .zip
+                    let sidecarURL = documentsURL.appendingPathComponent("\(sessionName).metadata.json")
+                    let metadata = Self.loadMetadata(at: sidecarURL)
+                    let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+
+                    sessions.append(SessionInfo(
+                        id: sessionName,
+                        url: url,
+                        metadata: metadata,
+                        folderSize: size
+                    ))
                 }
-
-                // Calculate folder size
-                let size = folderSize(at: url)
-
-                sessions.append(SessionInfo(
-                    id: url.lastPathComponent,
-                    url: url,
-                    metadata: metadata,
-                    folderSize: size
-                ))
             }
 
             // Sort by name (most recent first)
@@ -125,6 +127,19 @@ struct SessionListView: View {
         } catch {
             print("Failed to list sessions: \(error)")
             return []
+        }
+    }
+
+    private static func loadMetadata(at url: URL) -> SessionMetadata? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        do {
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            return try decoder.decode(SessionMetadata.self, from: data)
+        } catch {
+            print("Failed to load metadata at \(url.lastPathComponent): \(error)")
+            return nil
         }
     }
 
