@@ -64,6 +64,10 @@ struct SessionListView: View {
 
         for session in sessionsToDelete {
             try? FileManager.default.removeItem(at: session.url)
+            // Also remove the associated zip if it exists
+            let zipURL = session.url.deletingLastPathComponent()
+                .appendingPathComponent("\(session.id).zip")
+            try? FileManager.default.removeItem(at: zipURL)
         }
 
         sessions.remove(atOffsets: offsets)

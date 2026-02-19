@@ -20,6 +20,7 @@ class CaptureCoordinator: ObservableObject {
     var rawCaptureSession: RawCaptureSession?
     private var storageManager: StorageManager?
     private var videoRecorder: VideoRecorder?
+    private var sessionURL: URL?
     private var startTime: Date?
     private let rgbResolution: [Int] = [480, 360]
 
@@ -49,6 +50,7 @@ class CaptureCoordinator: ObservableObject {
         let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let sessionURL = documentsURL.appendingPathComponent(sessionName)
 
+        self.sessionURL = sessionURL
         storageManager = try StorageManager(sessionURL: sessionURL)
 
         let videoURL = sessionURL.appendingPathComponent("video.mov")
@@ -143,6 +145,11 @@ class CaptureCoordinator: ObservableObject {
                 cameraIntrinsics: intrinsics
             )
             print("Capture finalized: \(frameCount) RGB frames, \(encoderReadings.count) encoder readings, \(imuReadings.count) IMU readings")
+
+            // Auto-zip for fast Finder/USB transfer
+            if let url = sessionURL {
+                await zipSession(at: url)
+            }
         } catch {
             self.error = error
             print("Failed to finalize: \(error)")
@@ -150,7 +157,39 @@ class CaptureCoordinator: ObservableObject {
 
         storageManager = nil
         videoRecorder = nil
+        sessionURL = nil
         startTime = nil
+    }
+
+    // MARK: - Zip Archive
+
+    private func zipSession(at sessionURL: URL) async {
+        let fm = FileManager.default
+        let zipURL = sessionURL.deletingLastPathComponent()
+            .appendingPathComponent("\(sessionURL.lastPathComponent).zip")
+
+        // Remove existing zip if present
+        try? fm.removeItem(at: zipURL)
+
+        let coordinator = NSFileCoordinator()
+        var error: NSError?
+
+        coordinator.coordinate(
+            readingItemAt: sessionURL,
+            options: .forUploading,
+            error: &error
+        ) { tempURL in
+            try? fm.copyItem(at: tempURL, to: zipURL)
+        }
+
+        if let error = error {
+            print("Failed to create zip: \(error)")
+        } else {
+            let attrs = try? fm.attributesOfItem(atPath: zipURL.path)
+            let size = (attrs?[.size] as? Int64) ?? 0
+            let sizeMB = Double(size) / 1_000_000
+            print("Session zipped: \(zipURL.lastPathComponent) (\(String(format: "%.1f", sizeMB)) MB)")
+        }
     }
 
     // MARK: - Frame Handling (called from AVFoundation's thread)
