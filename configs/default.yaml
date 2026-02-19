@@ -2,12 +2,11 @@
 
 # Policy architecture
 policy:
-  # Observation: 7 (pose) + 4 (joints) + 1 (depth point) = 12
-  obs_dim: 12
+  # Observation: 7 (pose) + 4 (joints) = 11
+  obs_dim: 11
   image_size: 224
-  use_depth: true
 
-  # Action space: 7 (pose) + 4 (joints) = 11 (no depth — can't command depth on robot)
+  # Action space: 7 (pose) + 4 (joints) = 11
   action_dim: 11
   action_horizon: 16   # Predict 16 future timesteps
   prediction_horizon: 16
@@ -25,6 +24,7 @@ policy:
   batch_size: 64
   learning_rate: 1.0e-4
   num_epochs: 100
+  freeze_backbone: true
 
 # Data
 data:
@@ -43,6 +43,7 @@ training:
   ema_decay: 0.995
   checkpoint_every: 10
   eval_every: 5
+  early_stopping_patience: 10
 
 # Logging
 logging:

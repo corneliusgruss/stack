@@ -30,17 +30,22 @@ Proprioceptive data collection and diffusion policy for dexterous manipulation.
 - [x] Training pipeline complete: synthetic data, dataset, train loop, eval, tests (16/16 pass)
 - [x] Architecture upgraded: ResNet18 visual encoder + ConditionalUnet1D (matches Diffusion Policy paper)
 - [x] Sessions uploaded to Google Drive (BU school account, bu:stack_sessions/)
-- [ ] **NEXT:** First training run on real data (Colab Pro GPU)
-- [ ] End-to-end test: load processed sessions in Python, verify training dataset
-- [ ] Scale calibration with known object
+- [x] SCC account active (cgruss@scc1.bu.edu, group: trialscc, home: /usr3/graduate/cgruss, 10GB quota)
+- [x] SCC training running: 17 sessions, 100 epochs, V100 GPU, ~3.5 min/epoch
+- [x] Loss dropping fast: 0.62 → 0.03 by epoch 2
+- [x] Removed dead depth dimension (obs 12D→11D, depth was always 0 with ultrawide)
+- [x] IMU-based scale calibration script (stack/scripts/calibrate_scale.py)
+- [x] Auto-calibration integrated into run_slam.py pipeline
+- [x] Eval reports position units (meters vs COLMAP units) based on calibration status
+- [ ] **NEXT:** Evaluate training results, download checkpoint
+- [ ] Run scale calibration on 17 sessions: `python -m stack.scripts.calibrate_scale --data-dir data/raw`
 - [ ] Replace broken AS5600 encoder (Amazon order)
 
 ## Key Differentiator
 UMI-FT captures: **pose (7D) + gripper width (1D) = 8D**
-Stack captures: **pose (7D) + 4 joint angles (4D) + 1 depth point (1D) = 12D**
+Stack captures: **pose (7D) + 4 joint angles (4D) = 11D**
 
 This richer proprioception could enable learning more dexterous behaviors.
-The depth point acts as a virtual ToF sensor (like Sunday Robotics' Skill Capture Glove) — for free via iPhone LiDAR.
 
 ## Project Structure (Updated 2026-02-17)
 
@@ -106,6 +111,16 @@ python -m stack.scripts.run_slam --data-dir data/raw  # batch process
 | Bambu Lab P1S | Have (bought 2026-01-29) |
 | Finger prints | In progress |
 
+## GPU Compute
+
+**Primary: BU SCC** (Shared Computing Cluster)
+- Account: `cgruss@scc1.bu.edu`, project: `trialscc` (3-month trial, expires ~May 2026)
+- Scheduler: **SGE (qsub)**, NOT SLURM
+- Best GPUs available: A100-80G (24 total), L40S (118 total), H200 (20 total)
+- See `docs/gpu_access.md` for SGE flags, batch script examples, module loads
+- Colab notebook: `notebooks/train_colab.ipynb` (backup / quick iteration)
+- Local MPS: dev/debug only, not for real training
+
 ## Key Files
 
 - `docs/gpu_access.md` - GPU access plan (SCC, Colab, local) with draft email + SGE examples
@@ -120,6 +135,7 @@ python -m stack.scripts.run_slam --data-dir data/raw  # batch process
 - `stack/scripts/train.py` - Training loop (EMA, gradient clip, cosine LR, MPS support)
 - `stack/scripts/eval.py` - Evaluation (position/rotation/joint error metrics)
 - `stack/scripts/run_slam.py` - COLMAP SfM processing for raw sessions (local CLI)
+- `stack/scripts/calibrate_scale.py` - IMU-based scale calibration for COLMAP poses
 - `notebooks/run_slam.ipynb` - COLMAP processing (Colab notebook, backup)
 - `tests/test_training_pipeline.py` - 16 integration tests (all pass)
 - `firmware/encoder_reader/encoder_reader.ino` - ESP32 firmware (Serial 100Hz + BLE 50Hz)
@@ -155,7 +171,7 @@ Matches Chi et al. "Diffusion Policy" (RSS 2023). Three components:
 ```
 RGB images ──→ ResNet18 ──→ ┐
                              ├──→ obs_encoder ──→ obs_cond (hidden_dim)
-Proprio (12D) ────────────→ ┘                         │
+Proprio (11D) ────────────→ ┘                         │
                                                        ↓
 Noisy actions (11D × 16) ──→ ConditionalUnet1D ←── FiLM(obs_cond + timestep_emb)
                                     │
@@ -211,8 +227,8 @@ session_YYYY-MM-DD_HHMMSS/
 1. Capture on iPhone (ultrawide + BLE encoders)
 2. Transfer sessions to `data/raw/`
 3. `python -m stack.scripts.run_slam --data-dir data/raw` (COLMAP, local MacBook)
-4. Upload processed sessions to Google Drive
-5. Train on Colab Pro (GPU)
+4. Upload: `scp data/raw/*.zip cgruss@scc1.bu.edu:~/stack/data/raw/`
+5. Train on BU SCC: `qsub scripts/scc_train.sh`
 
 **Storage:** ~69 MB/min (was ~600 MB/min). 50 demos of 30s each = ~1.7 GB.
 
@@ -225,10 +241,17 @@ session_YYYY-MM-DD_HHMMSS/
 - Processed all 17 sessions locally on MacBook (~10 min each): `python -m stack.scripts.run_slam --data-dir data/raw`
 - Results: 17/17 OK, 793–2970 poses per session, f≈183 (120° ultrawide confirmed)
 - Pipeline: subsample 60fps→10fps, COLMAP SIFT+sequential matching+mapper, Slerp interpolation back to 60fps
-- Sessions uploaded to Google Drive (BU school account via rclone, zipped, 1.7GB total)
 - Removed ARKit mode from iOS app entirely (ultrawide-only now)
 - Firmware: added per-channel encoder invert (index=false, three-finger=true)
-- **Next:** First training run on real data (Colab Pro), scale calibration
+- Google Drive upload issues: incomplete frames (1597 vs 2970), Drive random access slow for training
+- Got BU SCC access (trial account, Duo MFA required for SSH)
+- SCC setup: `module load academic-ml/spring-2026` has PyTorch 2.8+CUDA 12.8, `diffusers` installed via pip
+- `pip install -e .` fails on SCC shared conda env — use `PYTHONPATH=~/stack:$PYTHONPATH` instead
+- SGE `#$ -o` directive: `~` doesn't expand, must use full path (`/usr3/graduate/cgruss/...`)
+- scp'd 17 session zips directly to SCC (1.1GB, ~2.3GB unzipped) — bypasses Drive entirely
+- First training run submitted: V100 GPU, 286 batches/epoch, ~3.5 min/epoch
+- Loss: 0.62 → 0.03 by epoch 2, learning rate 1e-4
+- **Next:** Evaluate training results, download checkpoint, scale calibration
 
 ### 2026-02-17 (Monday)
 - Built camera-agnostic capture pipeline
@@ -249,7 +272,7 @@ session_YYYY-MM-DD_HHMMSS/
 - Removed full depth map saving (biggest storage hog, not used by UMI-FT)
 - Added single-point LiDAR depth sampling (virtual ToF, median of 5x5 center region)
 - Updated Python loader for new session format (12D episodes, encoder alignment)
-- Updated diffusion policy obs_dim from 11 to 12 (+ depth point)
+- Updated diffusion policy obs_dim to 11 (pose 7D + joints 4D)
 - **Next:** Flash BLE firmware, build updated app, end-to-end test
 
 ### 2026-02-11 (Tuesday)

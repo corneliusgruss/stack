@@ -12,8 +12,8 @@ Architecture (matching the paper):
 - Diffusion: DDPM with cosine beta schedule
 
 Key dimensions:
-- Observation: 12D (pose 7D + joints 4D + depth 1D)
-- Action: 11D (pose 7D + joints 4D — no depth, can't command depth on robot)
+- Observation: 11D (pose 7D + joints 4D)
+- Action: 11D (pose 7D + joints 4D)
 - Action horizon: 16 timesteps predicted per chunk
 - Obs horizon: 2 past frames conditioned on
 """
@@ -40,12 +40,11 @@ class PolicyConfig:
     """Configuration for diffusion policy."""
 
     # Observation
-    obs_dim: int = 12  # 7 (pose) + 4 (joints) + 1 (depth point)
+    obs_dim: int = 11  # 7 (pose) + 4 (joints)
     image_size: int = 224
-    use_depth: bool = True
 
     # Action
-    action_dim: int = 11  # 7 (pose) + 4 (joints) — no depth in actions
+    action_dim: int = 11  # 7 (pose) + 4 (joints)
     action_horizon: int = 16  # Predict this many future steps
     obs_horizon: int = 2  # Condition on this many past obs
 
@@ -61,6 +60,7 @@ class PolicyConfig:
     batch_size: int = 64
     learning_rate: float = 1e-4
     num_epochs: int = 100
+    freeze_backbone: bool = True
 
 
 # ============================================================
@@ -311,6 +311,10 @@ class DiffusionPolicy(nn.Module):
             except (AttributeError, TypeError):
                 resnet = models.resnet18(pretrained=True)
             resnet.fc = nn.Linear(512, config.hidden_dim)
+            if config.freeze_backbone:
+                for name, param in resnet.named_parameters():
+                    if not name.startswith("fc."):
+                        param.requires_grad_(False)
             self.visual_encoder = resnet
         else:
             # Fallback: simple CNN (no pretrained features)
@@ -373,7 +377,7 @@ class DiffusionPolicy(nn.Module):
 
         Args:
             images: (B, obs_horizon, 3, H, W) observation images
-            proprio: (B, obs_horizon, 12) proprioception
+            proprio: (B, obs_horizon, 11) proprioception
             actions: (B, action_horizon, 11) ground truth action chunk
 
         Returns:
@@ -414,7 +418,7 @@ class DiffusionPolicy(nn.Module):
 
         Args:
             images: (B, obs_horizon, 3, H, W)
-            proprio: (B, obs_horizon, 12)
+            proprio: (B, obs_horizon, 11)
 
         Returns:
             actions: (B, action_horizon, action_dim)

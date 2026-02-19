@@ -1,7 +1,7 @@
 # GPU Access Plan
 
-## Status: Pending
-**Last updated:** 2026-02-16
+## Status: Active (SCC)
+**Last updated:** 2026-02-18
 
 ## Overview
 
@@ -46,11 +46,14 @@ Turnaround: same-day to ~3 business days.
 
 Request a trial account mentioning ME740 course project + GPU needs. Gets you limited access in 1-3 days.
 
-### Once You Have Access
+### Access (Active as of 2026-02-18)
 
 ```bash
-# SSH in
+# SSH in (requires Duo MFA)
 ssh cgruss@scc1.bu.edu
+
+# Home directory: /usr3/graduate/cgruss (10 GB quota)
+# Group: trialscc
 
 # Check GPU availability
 qgpus
@@ -60,8 +63,15 @@ qrsh -l gpus=1 -l gpu_c=7.0 -pe omp 4
 
 # Load pre-built PyTorch environment
 module load miniconda
-module load academic-ml/fall-2025
-conda activate fall-2025-pyt
+module load academic-ml/spring-2026
+conda activate spring-2026-pyt
+# PyTorch 2.8.0+cu128
+
+# Extra deps not in academic-ml:
+pip install --user diffusers
+
+# Package: don't use pip install -e (fails on shared conda)
+export PYTHONPATH=~/stack:$PYTHONPATH
 ```
 
 ### Example Batch Script
@@ -69,7 +79,7 @@ conda activate fall-2025-pyt
 ```bash
 #!/bin/bash -l
 
-#$ -P me740_project    # Replace with actual project name
+#$ -P trialscc         # Trial account (no project allocation needed)
 #$ -N diffusion_train
 #$ -pe omp 4
 #$ -l gpus=1

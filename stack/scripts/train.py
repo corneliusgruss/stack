@@ -113,6 +113,11 @@ def main():
     eval_every = int(training_cfg.get("eval_every", 5))
     num_workers = int(training_cfg.get("num_workers", 0))
     seed = int(training_cfg.get("seed", 42))
+    early_stopping_patience = int(training_cfg.get("early_stopping_patience", 0))
+
+    data_cfg = cfg.get("data", {}) if OMEGACONF_AVAILABLE and Path(args.config).exists() else {}
+    random_crop = bool(data_cfg.get("random_crop", True))
+    color_jitter = bool(data_cfg.get("color_jitter", True))
 
     # Seed
     torch.manual_seed(seed)
@@ -151,13 +156,16 @@ def main():
         obs_horizon=policy_config.obs_horizon,
         action_horizon=policy_config.action_horizon,
         image_size=policy_config.image_size,
+        augment=True,
+        random_crop=random_crop,
+        color_jitter=color_jitter,
     )
     val_dataset = StackDiffusionDataset(
         val_dirs,
         obs_horizon=policy_config.obs_horizon,
         action_horizon=policy_config.action_horizon,
         image_size=policy_config.image_size,
-        stats=train_dataset.stats,  # Use train stats for val
+        stats=train_dataset.stats,
     )
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
 
@@ -221,7 +229,8 @@ def main():
     torch.save(train_dataset.stats.state_dict(), output_dir / "normalizer.pt")
 
     param_count = sum(p.numel() for p in policy.parameters())
-    print(f"\nModel parameters: {param_count:,}")
+    trainable_count = sum(p.numel() for p in policy.parameters() if p.requires_grad)
+    print(f"\nModel parameters: {param_count:,} total, {trainable_count:,} trainable")
     print(f"Batches/epoch: {len(train_loader)}")
     print(f"Total steps: {total_steps}")
 
@@ -231,6 +240,7 @@ def main():
 
     global_step = start_epoch * len(train_loader)
     best_val_loss = float("inf")
+    evals_without_improvement = 0
 
     for epoch in range(start_epoch, policy_config.num_epochs):
         policy.train()
@@ -286,6 +296,7 @@ def main():
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
+                evals_without_improvement = 0
                 best_path = output_dir / "checkpoint_best.pt"
                 torch.save({
                     "epoch": epoch,
@@ -298,6 +309,13 @@ def main():
                     "val_loss": val_loss,
                 }, best_path)
                 print(f"  New best! Saved: {best_path}")
+            else:
+                evals_without_improvement += 1
+                if early_stopping_patience > 0:
+                    print(f"  No improvement ({evals_without_improvement}/{early_stopping_patience})")
+                    if evals_without_improvement >= early_stopping_patience:
+                        print(f"\nEarly stopping at epoch {epoch + 1}")
+                        break
 
         # Periodic checkpoint
         if (epoch + 1) % checkpoint_every == 0:
@@ -328,6 +346,8 @@ def main():
 
     print("\n" + "=" * 60)
     print(f"Training complete! Final checkpoint: {final_path}")
+    if early_stopping_patience > 0 and evals_without_improvement >= early_stopping_patience:
+        print(f"(Stopped early at epoch {epoch + 1} of {policy_config.num_epochs})")
     if best_val_loss < float("inf"):
         print(f"Best val loss: {best_val_loss:.4f}")
 

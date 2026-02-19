@@ -92,7 +92,6 @@ def generate_synthetic_session(
     # Generate trajectories
     poses_7d = generate_smooth_trajectory(num_frames, rng)
     joints = generate_smooth_joints(num_frames, rng)
-    depths = rng.uniform(0.2, 1.5, size=num_frames).astype(np.float32)
 
     # Timestamps (simulated 60 FPS)
     dt = 1.0 / fps
@@ -115,7 +114,7 @@ def generate_synthetic_session(
         poses_list.append({
             "timestamp": float(rgb_timestamps[i]),
             "rgbIndex": i,
-            "depth": float(depths[i]),
+            "depth": None,
             "transform": transform.tolist(),
         })
 

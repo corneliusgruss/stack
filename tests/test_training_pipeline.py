@@ -46,7 +46,7 @@ def synthetic_sessions(tmp_dir):
 def small_config():
     """Small policy config for fast tests."""
     return PolicyConfig(
-        obs_dim=12,
+        obs_dim=11,
         action_dim=11,
         image_size=64,  # Small for speed
         obs_horizon=2,
@@ -81,13 +81,13 @@ class TestSyntheticData:
         assert session.has_encoders
         assert session.num_encoder_readings == 30
 
-    def test_12d_episode_shape(self, tmp_dir):
+    def test_11d_episode_shape(self, tmp_dir):
         session_dir = tmp_dir / "test_session"
         generate_synthetic_session(session_dir, num_frames=30, seed=42)
 
         session = iPhoneSession(session_dir)
-        episode = session.get_episode_12d()
-        assert episode.shape == (30, 12)
+        episode = session.get_episode_11d()
+        assert episode.shape == (30, 11)
         assert episode.dtype == np.float32
         assert not np.isnan(episode).any()
 
@@ -108,7 +108,7 @@ class TestSyntheticData:
 
         s1 = iPhoneSession(dir1)
         s2 = iPhoneSession(dir2)
-        np.testing.assert_array_equal(s1.get_episode_12d(), s2.get_episode_12d())
+        np.testing.assert_array_equal(s1.get_episode_11d(), s2.get_episode_11d())
 
 
 class TestDataset:
@@ -131,7 +131,7 @@ class TestDataset:
         images, proprio, actions = dataset[0]
 
         assert images.shape == (small_config.obs_horizon, 3, small_config.image_size, small_config.image_size)
-        assert proprio.shape == (small_config.obs_horizon, 12)
+        assert proprio.shape == (small_config.obs_horizon, 11)
         assert actions.shape == (small_config.action_horizon, 11)
         assert images.dtype == torch.float32
         assert proprio.dtype == torch.float32
@@ -154,8 +154,8 @@ class TestDataset:
         sessions = [iPhoneSession(d) for d in synthetic_sessions]
         stats = compute_normalization_stats(sessions)
 
-        assert stats.proprio_mean.shape == (12,)
-        assert stats.proprio_std.shape == (12,)
+        assert stats.proprio_mean.shape == (11,)
+        assert stats.proprio_std.shape == (11,)
         assert stats.action_min.shape == (11,)
         assert stats.action_max.shape == (11,)
 
@@ -303,7 +303,7 @@ class TestEvaluation:
         policy.eval()
 
         session = iPhoneSession(synthetic_sessions[0])
-        episode = session.get_episode_12d()
+        episode = session.get_episode_11d()
 
         sessions = [iPhoneSession(d) for d in synthetic_sessions]
         stats = compute_normalization_stats(sessions)

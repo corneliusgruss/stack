@@ -28,7 +28,7 @@ struct CameraIntrinsics: Codable {
 
 struct IMUReading: Codable {
     let timestamp: Double
-    let accel: [Double]  // [x, y, z] m/s²
+    let accel: [Double]  // [x, y, z] in g's (CoreMotion userAcceleration, gravity removed)
     let gyro: [Double]   // [x, y, z] rad/s
 }
 

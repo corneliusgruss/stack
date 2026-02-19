@@ -237,6 +237,18 @@ def process_session(session_dir: Path, force: bool = False, subsample: int = 6):
 
     n_keyframes = recon.num_images()
     print(f"OK — {n_keyframes}/{len(sub_indices)} keyframes → {len(poses_list)} poses")
+
+    # Auto-calibrate scale if IMU data exists
+    imu_file = session_dir / "imu.json"
+    if imu_file.exists():
+        try:
+            from stack.scripts.calibrate_scale import calibrate_session
+            scale = calibrate_session(session_dir)
+            if scale is not None:
+                print(f"    Scale calibrated: {scale:.6f}")
+        except Exception as e:
+            print(f"    Scale calibration failed: {e}")
+
     return True
 
 

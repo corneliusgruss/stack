@@ -6,6 +6,7 @@ per-dimension error metrics (position, rotation, joints).
 
 Usage:
     python -m stack.scripts.eval --checkpoint outputs/checkpoint_best.pt --data-dir data/raw/synthetic
+    python -m stack.scripts.eval --checkpoint outputs/checkpoint_best.pt --data-dir data/raw --split val
 """
 
 import argparse
@@ -45,6 +46,49 @@ def quaternion_angular_error(q_pred: np.ndarray, q_true: np.ndarray) -> np.ndarr
     return errors.reshape(shape)
 
 
+def find_session_dirs(data_dir: Path) -> list[Path]:
+    """Find all session directories under data_dir."""
+    return sorted(
+        d for d in data_dir.iterdir()
+        if d.is_dir() and not d.name.startswith(".") and (d / "poses.json").exists()
+    )
+
+
+def split_sessions(
+    session_dirs: list[Path],
+    val_split: float = 0.2,
+    seed: int = 42,
+    split: str = "all",
+) -> list[Path]:
+    """Split sessions into train/val matching train.py logic.
+
+    Args:
+        session_dirs: All session directories
+        val_split: Fraction held out for validation
+        seed: Random seed for split (must match train.py)
+        split: Which split to return: 'train', 'val', or 'all'
+
+    Returns:
+        List of session directories for the requested split
+    """
+    if split == "all":
+        return session_dirs
+
+    n_val = max(1, int(len(session_dirs) * val_split))
+    n_train = len(session_dirs) - n_val
+    rng = np.random.default_rng(seed)
+    indices = rng.permutation(len(session_dirs))
+    train_dirs = [session_dirs[i] for i in indices[:n_train]]
+    val_dirs = [session_dirs[i] for i in indices[n_train:]]
+
+    if split == "val":
+        return val_dirs
+    elif split == "train":
+        return train_dirs
+    else:
+        raise ValueError(f"Unknown split: {split!r}. Use 'train', 'val', or 'all'.")
+
+
 def evaluate_episode(
     policy: DiffusionPolicy,
     session: iPhoneSession,
@@ -53,16 +97,22 @@ def evaluate_episode(
     action_horizon: int,
     image_size: int,
     device: torch.device,
+    eval_stride: int = 1,
+    return_trajectories: bool = False,
 ) -> dict:
     """Evaluate policy on a single episode.
 
     Slides observation window through the episode, predicts action chunks,
     and compares to ground truth.
+
+    Args:
+        eval_stride: Evaluate every Nth timestep (default 1 = all)
+        return_trajectories: If True, also return per-timestep predictions/GT arrays
     """
     from stack.data.training_dataset import IMAGENET_MEAN, IMAGENET_STD
     from PIL import Image as PILImage
 
-    episode = session.get_episode_12d()  # (T, 12)
+    episode = session.get_episode_11d()  # (T, 11)
     T = len(episode)
 
     if T < obs_horizon + action_horizon:
@@ -72,9 +122,12 @@ def evaluate_episode(
     all_rot_errors = []
     all_joint_errors = []
 
-    num_windows = T - obs_horizon - action_horizon + 1
+    # Trajectory storage
+    pred_actions_list = []
+    gt_actions_list = []
+    eval_indices_list = []
 
-    for t in range(obs_horizon - 1, T - action_horizon):
+    for t in range(obs_horizon - 1, T - action_horizon, eval_stride):
         obs_start = t - obs_horizon + 1
 
         # Build observation images
@@ -90,7 +143,7 @@ def evaluate_episode(
         # Build observation proprio
         obs_proprio = episode[obs_start:obs_start + obs_horizon].copy()
         obs_proprio = stats.normalize_proprio(obs_proprio)
-        obs_proprio = obs_proprio[np.newaxis]  # (1, obs_horizon, 12)
+        obs_proprio = obs_proprio[np.newaxis]  # (1, obs_horizon, 11)
 
         # Predict
         images_t = torch.from_numpy(obs_images).to(device)
@@ -116,13 +169,29 @@ def evaluate_episode(
         joint_error = np.abs(pred_actions[:, 7:11] - gt_actions[:, 7:11])
         all_joint_errors.append(joint_error.mean())
 
-    return {
+        if return_trajectories:
+            pred_actions_list.append(pred_actions)
+            gt_actions_list.append(gt_actions)
+            eval_indices_list.append(t)
+
+    num_windows = len(all_pos_errors)
+    result = {
         "skipped": False,
         "num_windows": num_windows,
         "position_mse": float(np.mean(all_pos_errors)),
         "rotation_error_deg": float(np.mean(all_rot_errors)),
         "joint_error_deg": float(np.mean(all_joint_errors)),
+        "position_errors": np.array(all_pos_errors),
+        "rotation_errors": np.array(all_rot_errors),
+        "joint_errors": np.array(all_joint_errors),
     }
+
+    if return_trajectories:
+        result["pred_actions_all"] = np.stack(pred_actions_list)  # (num_windows, action_horizon, 11)
+        result["gt_actions_all"] = np.stack(gt_actions_list)      # (num_windows, action_horizon, 11)
+        result["eval_indices"] = np.array(eval_indices_list)       # (num_windows,)
+
+    return result
 
 
 def main():
@@ -132,6 +201,13 @@ def main():
     parser.add_argument("--device", default=None, help="Device (cuda/mps/cpu)")
     parser.add_argument("--max-episodes", type=int, default=None, help="Max episodes to eval")
     parser.add_argument("--output", help="Save results to .npz file")
+    parser.add_argument("--eval-stride", type=int, default=1, help="Evaluate every Nth timestep")
+    parser.add_argument("--val-split", type=float, default=0.2, help="Validation split ratio")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for split")
+    parser.add_argument("--split", default="all", choices=["train", "val", "all"],
+                        help="Which split to evaluate")
+    parser.add_argument("--save-trajectories", action="store_true",
+                        help="Save per-timestep prediction data")
     args = parser.parse_args()
 
     # Device
@@ -171,17 +247,35 @@ def main():
     if "val_loss" in checkpoint:
         print(f"Checkpoint val loss: {checkpoint['val_loss']:.4f}")
 
-    # Find sessions
+    # Find and split sessions
     data_dir = Path(args.data_dir)
-    session_dirs = sorted(
-        d for d in data_dir.iterdir()
-        if d.is_dir() and not d.name.startswith(".") and (d / "poses.json").exists()
-    )
+    all_session_dirs = find_session_dirs(data_dir)
+    session_dirs = split_sessions(all_session_dirs, args.val_split, args.seed, args.split)
 
     if args.max_episodes:
         session_dirs = session_dirs[:args.max_episodes]
 
-    print(f"\nEvaluating on {len(session_dirs)} episodes...")
+    # Check calibration status
+    import json as _json
+    calibrated_count = 0
+    uncalibrated_count = 0
+    for sd in session_dirs:
+        meta_file = sd / "metadata.json"
+        if meta_file.exists():
+            with open(meta_file) as f:
+                meta = _json.load(f)
+            if meta.get("scale_factor") is not None:
+                calibrated_count += 1
+            else:
+                uncalibrated_count += 1
+
+    pos_unit = "m" if uncalibrated_count == 0 and calibrated_count > 0 else "COLMAP units"
+    if uncalibrated_count > 0:
+        print(f"\nWARNING: {uncalibrated_count}/{len(session_dirs)} sessions not scale-calibrated.")
+        print(f"  Position errors are in COLMAP arbitrary units, not meters.")
+        print(f"  Run: python -m stack.scripts.calibrate_scale --data-dir {args.data_dir}")
+
+    print(f"\nEvaluating on {len(session_dirs)} episodes (split={args.split}, stride={args.eval_stride})...")
     print("=" * 60)
 
     results = []
@@ -193,6 +287,8 @@ def main():
             action_horizon=config.action_horizon,
             image_size=config.image_size,
             device=device,
+            eval_stride=args.eval_stride,
+            return_trajectories=args.save_trajectories,
         )
 
         if result["skipped"]:
@@ -202,9 +298,9 @@ def main():
         results.append(result)
         print(
             f"  [{i+1}/{len(session_dirs)}] {session_dir.name}: "
-            f"pos={result['position_mse']:.4f}m  "
-            f"rot={result['rotation_error_deg']:.1f}°  "
-            f"joints={result['joint_error_deg']:.1f}°"
+            f"pos={result['position_mse']:.4f} {pos_unit}  "
+            f"rot={result['rotation_error_deg']:.1f}deg  "
+            f"joints={result['joint_error_deg']:.1f}deg"
         )
 
     if not results:
@@ -215,9 +311,9 @@ def main():
     print("\n" + "=" * 60)
     print("SUMMARY")
     print(f"  Episodes evaluated: {len(results)}")
-    print(f"  Position MSE:       {np.mean([r['position_mse'] for r in results]):.4f} m")
-    print(f"  Rotation error:     {np.mean([r['rotation_error_deg'] for r in results]):.1f}°")
-    print(f"  Joint error:        {np.mean([r['joint_error_deg'] for r in results]):.1f}°")
+    print(f"  Position MSE:       {np.mean([r['position_mse'] for r in results]):.4f} {pos_unit}")
+    print(f"  Rotation error:     {np.mean([r['rotation_error_deg'] for r in results]):.1f}deg")
+    print(f"  Joint error:        {np.mean([r['joint_error_deg'] for r in results]):.1f}deg")
 
     if args.output:
         np.savez(args.output, results=results)

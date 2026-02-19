@@ -2,12 +2,14 @@
 Load capture sessions from StackCapture app.
 
 Supports both ARKit sessions (poses from Apple) and raw/ultrawide sessions
-(poses from DROID-SLAM offline processing).
+(poses from COLMAP SfM offline processing).
+
+Episode format: 11D = pose (7) + joints (4)
 
 Session format (v3 — camera-agnostic):
     session_YYYY-MM-DD_HHMMSS/
     ├── metadata.json       # Device, resolution, frame counts, captureSource
-    ├── poses.json          # [{timestamp, rgbIndex, depth, transform_4x4}, ...]
+    ├── poses.json          # [{timestamp, rgbIndex, transform_4x4}, ...]
     ├── encoders.json       # [{timestamp, esp_timestamp_ms, index_mcp, ...}, ...]
     ├── imu.json            # [{timestamp, accel:[x,y,z], gyro:[x,y,z]}, ...]
     ├── calib.txt           # "fx fy cx cy" — camera intrinsics (for SLAM)
@@ -186,26 +188,12 @@ class SessionLoader:
         quat = rotation.as_quat()  # Returns [x, y, z, w]
         return np.concatenate([position, quat]).astype(np.float32)
 
-    def get_depth_point(self, index: int) -> Optional[float]:
-        """Get single-point LiDAR depth (meters) for frame index, or None."""
-        pose = self._poses_raw[index]
-        return pose.get("depth")
-
     def get_all_poses_7d(self) -> np.ndarray:
         """Get all poses as (T, 7) array [x, y, z, qx, qy, qz, qw]."""
         poses = np.zeros((self.num_poses, 7), dtype=np.float32)
         for i in range(self.num_poses):
             poses[i] = self.get_pose_7d(i)
         return poses
-
-    def get_all_depth_points(self) -> np.ndarray:
-        """Get all single-point depths as (T,) array in meters. NaN for missing."""
-        depths = np.full(self.num_poses, np.nan, dtype=np.float32)
-        for i, pose in enumerate(self._poses_raw):
-            d = pose.get("depth")
-            if d is not None:
-                depths[i] = d
-        return depths
 
     def get_encoder_timestamps(self) -> np.ndarray:
         """Get encoder timestamps (T_enc,) in seconds since epoch."""
@@ -302,23 +290,26 @@ class SessionLoader:
             images[i] = self.get_rgb_frame(i)
         return images
 
-    def get_episode_12d(self) -> np.ndarray:
+    def get_episode_11d(self) -> np.ndarray:
         """
-        Get full 12D proprioception: 7 (pose) + 4 (joints) + 1 (depth point).
-        Returns (T, 12) array aligned to RGB frames.
+        Get full 11D proprioception: 7 (pose) + 4 (joints).
+        Returns (T, 11) array aligned to RGB frames.
         """
         poses = self.get_all_poses_7d()  # (T, 7)
         encoders = self.get_aligned_encoders()  # (T, 4)
-        depths = self.get_all_depth_points()  # (T,)
 
-        # Replace NaN depths with 0
-        depths = np.nan_to_num(depths, nan=0.0)
+        return np.concatenate([poses, encoders], axis=1).astype(np.float32)
 
-        return np.concatenate([
-            poses,
-            encoders,
-            depths[:, None]
-        ], axis=1).astype(np.float32)
+    def get_episode_12d(self) -> np.ndarray:
+        """Deprecated: use get_episode_11d(). Depth dimension was always zero."""
+        import warnings
+        warnings.warn(
+            "get_episode_12d() is deprecated, use get_episode_11d(). "
+            "Depth dimension has been removed.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.get_episode_11d()
 
     def summary(self) -> str:
         """Return a summary string of the session."""
@@ -382,10 +373,10 @@ def verify_session(path: str | Path) -> bool:
         assert pose.shape == (7,), "Pose shape mismatch"
         assert not np.isnan(pose).any(), "Pose contains NaN"
 
-        # Check 12D episode if encoders present
+        # Check 11D episode if encoders present
         if session.has_encoders:
-            episode = session.get_episode_12d()
-            assert episode.shape == (session.num_poses, 12), f"Episode shape mismatch: {episode.shape}"
+            episode = session.get_episode_11d()
+            assert episode.shape == (session.num_poses, 11), f"Episode shape mismatch: {episode.shape}"
 
         print(f"Session verified: {path}")
         print(session.summary())
@@ -413,11 +404,8 @@ if __name__ == "__main__":
         if session.has_encoders:
             print(f"  Encoder readings: {session.num_encoder_readings}")
             print(f"  First encoder: {session.get_encoder_reading(0)}")
-            print(f"  12D episode shape: {session.get_episode_12d().shape}")
+            print(f"  11D episode shape: {session.get_episode_11d().shape}")
         if session.has_imu:
             imu = session.get_imu_data()
             print(f"  IMU readings: {session.num_imu_readings}")
             print(f"  IMU rate: {1.0 / np.mean(np.diff(imu['timestamps'])):.0f} Hz")
-        depth = session.get_depth_point(0)
-        if depth is not None:
-            print(f"  First depth point: {depth:.3f} m")
