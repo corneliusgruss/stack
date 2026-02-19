@@ -17,7 +17,7 @@ policy:
   beta_schedule: "squaredcos_cap_v2"
 
   # Network
-  hidden_dim: 256
+  hidden_dim: 64
   num_layers: 4
 
   # Training
