@@ -23,6 +23,12 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+
 from stack.policy.diffusion import DiffusionPolicy, PolicyConfig
 from stack.data.iphone_loader import iPhoneSession
 from stack.data.training_dataset import NormalizationStats
@@ -59,7 +65,11 @@ def main():
                         help="Which split to evaluate")
     parser.add_argument("--video", action="store_true", help="Render overlay videos (slower)")
     parser.add_argument("--max-episodes", type=int, default=None, help="Max episodes to eval")
+    parser.add_argument("--wandb", action="store_true", help="Log eval viz results to wandb")
+    parser.add_argument("--wandb-run-id", default=None, help="Resume existing wandb run")
     args = parser.parse_args()
+
+    use_wandb = args.wandb and WANDB_AVAILABLE
 
     # Device
     if args.device:
@@ -94,6 +104,21 @@ def main():
         print(f"Epoch: {checkpoint['epoch'] + 1}")
     if "val_loss" in checkpoint:
         print(f"Val loss: {checkpoint['val_loss']:.4f}")
+
+    # Initialize wandb
+    if use_wandb:
+        wandb.init(
+            project="stack",
+            job_type="eval_viz",
+            config={
+                "checkpoint": str(args.checkpoint),
+                "split": args.split,
+                "eval_stride": args.eval_stride,
+                **{f"policy/{k}": v for k, v in checkpoint.get("config", {}).items()},
+            },
+            id=args.wandb_run_id,
+            resume="must" if args.wandb_run_id else None,
+        )
 
     # Find and split sessions
     data_dir = Path(args.data_dir)
@@ -141,6 +166,8 @@ def main():
 
     if not session_results:
         print("No sessions evaluated. Check data directory and split settings.")
+        if use_wandb:
+            wandb.finish()
         return
 
     # === Step 2: Per-session plots ===
@@ -260,6 +287,33 @@ def main():
     metrics_path = output_dir / "metrics.json"
     with open(metrics_path, "w") as f:
         json.dump(metrics, f, indent=2)
+
+    # === Step 6: Upload to wandb ===
+    if use_wandb:
+        wandb_images = {
+            "eval_viz/dashboard": wandb.Image(str(output_dir / "dashboard.png")),
+            "eval_viz/error_distributions": wandb.Image(str(output_dir / "error_distributions.png")),
+            "eval_viz/per_session_metrics": wandb.Image(str(output_dir / "per_session_metrics.png")),
+        }
+
+        # Upload best session trajectory
+        best_dir = output_dir / f"session_{best_idx:03d}"
+        if (best_dir / "trajectory_3d.png").exists():
+            wandb_images["eval_viz/best_trajectory_3d"] = wandb.Image(str(best_dir / "trajectory_3d.png"))
+        if (best_dir / "position_over_time.png").exists():
+            wandb_images["eval_viz/best_position_over_time"] = wandb.Image(str(best_dir / "position_over_time.png"))
+        if (best_dir / "joints_over_time.png").exists():
+            wandb_images["eval_viz/best_joints_over_time"] = wandb.Image(str(best_dir / "joints_over_time.png"))
+
+        wandb.log(wandb_images)
+
+        # Summary metrics
+        wandb.run.summary["eval_viz/position_mse_m"] = metrics["aggregate"]["position_mse_m"]
+        wandb.run.summary["eval_viz/rotation_error_deg"] = metrics["aggregate"]["rotation_error_deg"]
+        wandb.run.summary["eval_viz/joint_error_deg"] = metrics["aggregate"]["joint_error_deg"]
+        wandb.run.summary["eval_viz/num_sessions"] = len(session_results)
+
+        wandb.finish()
 
     # === Summary ===
     print("\n" + "=" * 60)

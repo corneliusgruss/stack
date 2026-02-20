@@ -82,6 +82,69 @@ def validate(
     return total_loss / max(count, 1)
 
 
+@torch.no_grad()
+def log_sample_predictions(
+    policy: DiffusionPolicy,
+    val_dataset: StackDiffusionDataset,
+    stats: NormalizationStats,
+    device: torch.device,
+    global_step: int,
+    num_samples: int = 4,
+):
+    """Run DDPM inference on random val samples and log predicted vs GT action plots."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    policy.eval()
+    rng = np.random.default_rng()
+    indices = rng.choice(len(val_dataset), size=min(num_samples, len(val_dataset)), replace=False)
+
+    fig, axes = plt.subplots(num_samples, 3, figsize=(15, 3 * num_samples))
+    if num_samples == 1:
+        axes = axes[np.newaxis, :]
+
+    dim_labels = ["Position (XYZ)", "Rotation (quat)", "Joints"]
+    dim_slices = [slice(0, 3), slice(3, 7), slice(7, 11)]
+
+    for row, idx in enumerate(indices):
+        images, proprio, actions = val_dataset[idx]
+        images_t = images.unsqueeze(0).to(device)
+        proprio_t = proprio.unsqueeze(0).to(device)
+
+        pred_norm = policy.predict(images_t, proprio_t).cpu().numpy()[0]  # (action_horizon, 11)
+        pred = stats.unnormalize_action(pred_norm)
+        gt = stats.unnormalize_action(actions.numpy())
+
+        for col, (label, sl) in enumerate(zip(dim_labels, dim_slices)):
+            ax = axes[row, col]
+            gt_vals = gt[:, sl]
+            pred_vals = pred[:, sl]
+            t_axis = np.arange(gt_vals.shape[0])
+            for d in range(gt_vals.shape[1]):
+                ax.plot(t_axis, gt_vals[:, d], "C0-", alpha=0.6, linewidth=1)
+                ax.plot(t_axis, pred_vals[:, d], "C1--", alpha=0.6, linewidth=1)
+            if row == 0:
+                ax.set_title(label)
+            if col == 0:
+                ax.set_ylabel(f"Sample {row}")
+            ax.set_xlabel("t")
+            ax.tick_params(labelsize=7)
+
+    # Legend
+    from matplotlib.lines import Line2D
+    legend_elements = [
+        Line2D([0], [0], color="C0", label="Ground Truth"),
+        Line2D([0], [0], color="C1", linestyle="--", label="Predicted"),
+    ]
+    fig.legend(handles=legend_elements, loc="upper right", fontsize=9)
+    fig.suptitle("Sample Predictions (val set)", fontsize=12)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+
+    wandb.log({"val/sample_predictions": wandb.Image(fig)}, step=global_step)
+    plt.close(fig)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train diffusion policy")
     parser.add_argument("--config", default="configs/default.yaml", help="Config file")
@@ -118,6 +181,14 @@ def main():
     data_cfg = cfg.get("data", {}) if OMEGACONF_AVAILABLE and Path(args.config).exists() else {}
     random_crop = bool(data_cfg.get("random_crop", True))
     color_jitter = bool(data_cfg.get("color_jitter", True))
+
+    # Parse wandb config from YAML
+    logging_cfg = cfg.get("logging", {}).get("wandb", {}) if OMEGACONF_AVAILABLE and Path(args.config).exists() else {}
+    wandb_cfg_enabled = bool(logging_cfg.get("enabled", False))
+    wandb_project = str(logging_cfg.get("project", "stack"))
+    wandb_entity = logging_cfg.get("entity", None)
+    log_images_every = int(logging_cfg.get("log_images_every", 10))
+    log_artifacts = bool(logging_cfg.get("log_artifacts", True))
 
     # Seed
     torch.manual_seed(seed)
@@ -214,16 +285,52 @@ def main():
         print(f"Resumed from epoch {start_epoch}")
 
     # W&B
-    use_wandb = args.wandb and WANDB_AVAILABLE
+    use_wandb = (args.wandb or wandb_cfg_enabled) and WANDB_AVAILABLE
     if use_wandb:
-        wandb.init(project="stack", config={
-            **vars(policy_config),
-            "gradient_clip": gradient_clip,
-            "ema_decay": ema_decay,
-            "num_train_sessions": n_train,
-            "num_val_sessions": n_val,
-            "total_train_samples": len(train_dataset),
-        })
+        param_count = sum(p.numel() for p in policy.parameters())
+        trainable_count = sum(p.numel() for p in policy.parameters() if p.requires_grad)
+
+        # Hardware info
+        hw_config = {"hardware/device": str(device)}
+        if device.type == "cuda":
+            hw_config["hardware/gpu_name"] = torch.cuda.get_device_name(device)
+            hw_config["hardware/gpu_memory_gb"] = round(
+                torch.cuda.get_device_properties(device).total_mem / 1e9, 1
+            )
+
+        wandb.init(
+            project=wandb_project,
+            entity=wandb_entity if wandb_entity else None,
+            config={
+                # Policy config
+                **{f"policy/{k}": v for k, v in vars(policy_config).items()},
+                # Training hyperparams
+                "training/gradient_clip": gradient_clip,
+                "training/ema_decay": ema_decay,
+                "training/eval_every": eval_every,
+                "training/seed": seed,
+                "training/early_stopping_patience": early_stopping_patience,
+                "training/random_crop": random_crop,
+                "training/color_jitter": color_jitter,
+                # Model info
+                "model/param_count_total": param_count,
+                "model/param_count_trainable": trainable_count,
+                # Dataset stats
+                "dataset/num_train_sessions": n_train,
+                "dataset/num_val_sessions": n_val,
+                "dataset/total_train_samples": len(train_dataset),
+                "dataset/total_val_samples": len(val_dataset),
+                "dataset/batches_per_epoch": len(train_loader),
+                "dataset/total_steps": total_steps,
+                # Normalization stats (for reproducibility)
+                "dataset/proprio_mean": train_dataset.stats.proprio_mean.tolist(),
+                "dataset/proprio_std": train_dataset.stats.proprio_std.tolist(),
+                "dataset/action_min": train_dataset.stats.action_min.tolist(),
+                "dataset/action_max": train_dataset.stats.action_max.tolist(),
+                # Hardware
+                **hw_config,
+            },
+        )
 
     # Save config and normalizer
     torch.save(train_dataset.stats.state_dict(), output_dir / "normalizer.pt")
@@ -240,7 +347,9 @@ def main():
 
     global_step = start_epoch * len(train_loader)
     best_val_loss = float("inf")
+    best_val_epoch = -1
     evals_without_improvement = 0
+    early_stopped = False
 
     for epoch in range(start_epoch, policy_config.num_epochs):
         policy.train()
@@ -280,11 +389,13 @@ def main():
                     "train/loss": loss.item(),
                     "train/grad_norm": grad_norm,
                     "train/lr": scheduler.get_last_lr()[0],
-                    "step": global_step,
-                })
+                }, step=global_step)
 
         avg_train_loss = epoch_loss / max(num_batches, 1)
         print(f"  Epoch {epoch+1} avg train loss: {avg_train_loss:.4f}")
+
+        if use_wandb:
+            wandb.log({"train/epoch_loss": avg_train_loss, "epoch": epoch + 1}, step=global_step)
 
         # Validation
         if (epoch + 1) % eval_every == 0 and len(val_dataset) > 0:
@@ -292,10 +403,21 @@ def main():
             print(f"  Val loss (EMA): {val_loss:.4f}")
 
             if use_wandb:
-                wandb.log({"val/loss": val_loss, "epoch": epoch + 1})
+                wandb.log({
+                    "val/loss": val_loss,
+                    "val/best_loss": min(best_val_loss, val_loss),
+                }, step=global_step)
+
+            # Sample prediction images
+            if use_wandb and log_images_every > 0 and (epoch + 1) % log_images_every == 0:
+                log_sample_predictions(
+                    ema_policy, val_dataset, train_dataset.stats,
+                    device, global_step,
+                )
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
+                best_val_epoch = epoch + 1
                 evals_without_improvement = 0
                 best_path = output_dir / "checkpoint_best.pt"
                 torch.save({
@@ -309,12 +431,25 @@ def main():
                     "val_loss": val_loss,
                 }, best_path)
                 print(f"  New best! Saved: {best_path}")
+
+                if use_wandb:
+                    wandb.run.summary["best_val_loss"] = best_val_loss
+                    wandb.run.summary["best_val_epoch"] = best_val_epoch
+
+                    if log_artifacts:
+                        artifact = wandb.Artifact(
+                            "checkpoint-best", type="model",
+                            metadata={"epoch": epoch + 1, "val_loss": val_loss},
+                        )
+                        artifact.add_file(str(best_path))
+                        wandb.log_artifact(artifact)
             else:
                 evals_without_improvement += 1
                 if early_stopping_patience > 0:
                     print(f"  No improvement ({evals_without_improvement}/{early_stopping_patience})")
                     if evals_without_improvement >= early_stopping_patience:
                         print(f"\nEarly stopping at epoch {epoch + 1}")
+                        early_stopped = True
                         break
 
         # Periodic checkpoint
@@ -346,12 +481,17 @@ def main():
 
     print("\n" + "=" * 60)
     print(f"Training complete! Final checkpoint: {final_path}")
-    if early_stopping_patience > 0 and evals_without_improvement >= early_stopping_patience:
+    if early_stopped:
         print(f"(Stopped early at epoch {epoch + 1} of {policy_config.num_epochs})")
     if best_val_loss < float("inf"):
         print(f"Best val loss: {best_val_loss:.4f}")
 
     if use_wandb:
+        wandb.run.summary["final_train_loss"] = avg_train_loss
+        wandb.run.summary["total_epochs"] = epoch + 1
+        wandb.run.summary["best_val_loss"] = best_val_loss
+        wandb.run.summary["best_val_epoch"] = best_val_epoch
+        wandb.run.summary["early_stopped"] = early_stopped
         wandb.finish()
 
 

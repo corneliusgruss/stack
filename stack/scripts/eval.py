@@ -7,6 +7,7 @@ per-dimension error metrics (position, rotation, joints).
 Usage:
     python -m stack.scripts.eval --checkpoint outputs/checkpoint_best.pt --data-dir data/raw/synthetic
     python -m stack.scripts.eval --checkpoint outputs/checkpoint_best.pt --data-dir data/raw --split val
+    python -m stack.scripts.eval --checkpoint outputs/checkpoint_best.pt --data-dir data/raw --wandb
 """
 
 import argparse
@@ -15,6 +16,12 @@ from pathlib import Path
 import numpy as np
 import torch
 from scipy.spatial.transform import Rotation
+
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
 
 from stack.policy.diffusion import DiffusionPolicy, PolicyConfig
 from stack.data.iphone_loader import iPhoneSession
@@ -208,7 +215,11 @@ def main():
                         help="Which split to evaluate")
     parser.add_argument("--save-trajectories", action="store_true",
                         help="Save per-timestep prediction data")
+    parser.add_argument("--wandb", action="store_true", help="Log eval results to wandb")
+    parser.add_argument("--wandb-run-id", default=None, help="Resume existing wandb run")
     args = parser.parse_args()
+
+    use_wandb = args.wandb and WANDB_AVAILABLE
 
     # Device
     if args.device:
@@ -246,6 +257,21 @@ def main():
         print(f"Epoch: {checkpoint['epoch'] + 1}")
     if "val_loss" in checkpoint:
         print(f"Checkpoint val loss: {checkpoint['val_loss']:.4f}")
+
+    # Initialize wandb
+    if use_wandb:
+        wandb.init(
+            project="stack",
+            job_type="eval",
+            config={
+                "checkpoint": str(args.checkpoint),
+                "split": args.split,
+                "eval_stride": args.eval_stride,
+                **{f"policy/{k}": v for k, v in checkpoint.get("config", {}).items()},
+            },
+            id=args.wandb_run_id,
+            resume="must" if args.wandb_run_id else None,
+        )
 
     # Find and split sessions
     data_dir = Path(args.data_dir)
@@ -295,7 +321,7 @@ def main():
             print(f"  [{i+1}/{len(session_dirs)}] {session_dir.name}: SKIPPED ({result['reason']})")
             continue
 
-        results.append(result)
+        results.append({**result, "name": session_dir.name})
         print(
             f"  [{i+1}/{len(session_dirs)}] {session_dir.name}: "
             f"pos={result['position_mse']:.4f} {pos_unit}  "
@@ -305,15 +331,50 @@ def main():
 
     if not results:
         print("\nNo episodes evaluated.")
+        if use_wandb:
+            wandb.finish()
         return
 
     # Aggregate
+    agg_pos = float(np.mean([r["position_mse"] for r in results]))
+    agg_rot = float(np.mean([r["rotation_error_deg"] for r in results]))
+    agg_joint = float(np.mean([r["joint_error_deg"] for r in results]))
+
     print("\n" + "=" * 60)
     print("SUMMARY")
     print(f"  Episodes evaluated: {len(results)}")
-    print(f"  Position MSE:       {np.mean([r['position_mse'] for r in results]):.4f} {pos_unit}")
-    print(f"  Rotation error:     {np.mean([r['rotation_error_deg'] for r in results]):.1f}deg")
-    print(f"  Joint error:        {np.mean([r['joint_error_deg'] for r in results]):.1f}deg")
+    print(f"  Position MSE:       {agg_pos:.4f} {pos_unit}")
+    print(f"  Rotation error:     {agg_rot:.1f}deg")
+    print(f"  Joint error:        {agg_joint:.1f}deg")
+
+    if use_wandb:
+        # Aggregate scalars
+        wandb.log({
+            "eval/position_mse": agg_pos,
+            "eval/rotation_error_deg": agg_rot,
+            "eval/joint_error_deg": agg_joint,
+            "eval/num_episodes": len(results),
+        })
+
+        # Per-session table
+        table = wandb.Table(columns=[
+            "session", "num_windows", "position_mse", "rotation_error_deg", "joint_error_deg",
+        ])
+        for r in results:
+            table.add_data(
+                r["name"], r["num_windows"],
+                r["position_mse"], r["rotation_error_deg"], r["joint_error_deg"],
+            )
+        wandb.log({"eval/per_session": table})
+
+        # Summary
+        wandb.run.summary["eval/position_mse"] = agg_pos
+        wandb.run.summary["eval/rotation_error_deg"] = agg_rot
+        wandb.run.summary["eval/joint_error_deg"] = agg_joint
+        wandb.run.summary["eval/num_episodes"] = len(results)
+        wandb.run.summary["eval/position_unit"] = pos_unit
+
+        wandb.finish()
 
     if args.output:
         np.savez(args.output, results=results)
