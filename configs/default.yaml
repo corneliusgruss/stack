@@ -41,7 +41,7 @@ training:
   num_workers: 4
   gradient_clip: 1.0
   ema_decay: 0.995
-  checkpoint_every: 10
+  checkpoint_every: 25
   eval_every: 5
   early_stopping_patience: 10
 
@@ -51,4 +51,6 @@ logging:
     enabled: false
     project: "stack"
     entity: null
+    log_images_every: 10   # Sample prediction images every N epochs (0=disable)
+    log_artifacts: true    # Upload best checkpoint as wandb Artifact
   tensorboard: true
