@@ -12,8 +12,7 @@
 module load miniconda
 module load academic-ml/spring-2026
 conda activate spring-2026-pyt
-
-pip install --user -q diffusers omegaconf wandb
+source ~/stack/venv/bin/activate
 
 export PYTHONPATH=~/stack:$PYTHONPATH
 export WANDB_DIR=/usr3/graduate/cgruss/stack/outputs
