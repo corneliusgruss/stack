@@ -181,14 +181,16 @@ float readEncoderDegrees(uint8_t channel, int16_t offset, bool invert) {
   // AS5600 is 12-bit (0-4095)
   // invert=true: magnet mounted so raw decreases with flexion → flip direction
   // invert=false: raw increases with flexion → keep as-is
+  // Signed output centered on calibration point (no 0/360 wrapping).
+  // Maps to [-180, 180) range — valid for joints with < 180° range.
   int16_t adjusted;
   if (invert) {
     adjusted = offset - (int16_t)raw;
   } else {
     adjusted = (int16_t)raw - offset;
   }
-  if (adjusted < 0) adjusted += 4096;
-  if (adjusted >= 4096) adjusted -= 4096;
+  if (adjusted > 2048) adjusted -= 4096;
+  if (adjusted < -2048) adjusted += 4096;
 
   return adjusted * 360.0 / 4096.0;
 }

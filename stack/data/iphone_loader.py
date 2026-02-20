@@ -249,6 +249,13 @@ class SessionLoader:
             if abs(enc_rel[idx] - t) < 0.05:
                 aligned[i] = enc_values[idx]
 
+        # Unwrap each encoder channel to fix 0°/360° boundary discontinuities.
+        # Imperfect magnet mounting can cause readings to wrap (e.g., 359°→0°
+        # for a tiny physical movement). np.unwrap detects jumps > 180° and
+        # adds/subtracts 360° to make the signal continuous.
+        for ch in range(4):
+            aligned[:, ch] = np.unwrap(aligned[:, ch], period=360.0)
+
         return aligned
 
     def get_imu_data(self) -> Optional[dict]:
