@@ -1,7 +1,7 @@
 # GPU Access Plan
 
 ## Status: Active (SCC)
-**Last updated:** 2026-02-18
+**Last updated:** 2026-02-19
 
 ## Overview
 
@@ -29,30 +29,13 @@ A faculty member must create a project and add you. Two paths:
 
 Turnaround: same-day to ~3 business days.
 
-### Draft Email to Prof. Baillieul
-
-> **Subject:** SCC GPU Access for ME740 Project
->
-> Hi Professor Baillieul,
->
-> My project proposal (Proprioceptive Data Collection for Diffusion-Based Manipulation Learning) was approved — thank you! Training the diffusion policy will require GPU compute.
->
-> Does ME740 have an SCC course project I can be added to? If not, would you be able to create one? Alternatively, if there's another way you'd recommend I get access, I'm happy to follow that path.
->
-> Thanks,
-> Cornelius
-
-### Backup: Email help@scc.bu.edu
-
-Request a trial account mentioning ME740 course project + GPU needs. Gets you limited access in 1-3 days.
-
 ### Access (Active as of 2026-02-18)
 
 ```bash
 # SSH in (requires Duo MFA)
 ssh cgruss@scc1.bu.edu
 
-# Home directory: /usr3/graduate/cgruss (10 GB quota)
+# Home directory: /usr3/graduate/cgruss (10 GB quota!)
 # Group: trialscc
 
 # Check GPU availability
@@ -68,34 +51,94 @@ conda activate spring-2026-pyt
 # PyTorch 2.8.0+cu128
 
 # Extra deps not in academic-ml:
-pip install --user diffusers
+pip install --user diffusers omegaconf wandb
 
 # Package: don't use pip install -e (fails on shared conda)
 export PYTHONPATH=~/stack:$PYTHONPATH
 ```
 
-### Example Batch Script
+### Data Pipeline: Local → SCC
+
+**Problem:** SCC home quota is 10 GB. Raw sessions are ~70 MB each (480x360 JPEGs + video + IMU). 50 sessions = 3.5 GB raw, plus checkpoints at ~183 MB each — blows the quota fast.
+
+**Solution:** Pack data locally with pre-resized 224x224 images, upload only what training needs.
+
+#### Step 1: Process locally (MacBook)
 
 ```bash
-#!/bin/bash -l
+# Run COLMAP + scale calibration on raw sessions
+python -m stack.scripts.run_slam --data-dir data/raw
 
-#$ -P trialscc         # Trial account (no project allocation needed)
-#$ -N diffusion_train
-#$ -pe omp 4
-#$ -l gpus=1
-#$ -l gpu_c=7.0        # Gets A40, A6000, A100, or H200
-#$ -l h_rt=12:00:00    # 12 hours (max 48h for GPU jobs)
-#$ -j y
-
-module load miniconda
-module load academic-ml/fall-2025
-conda activate fall-2025-pyt
-
-cd /projectnb/me740_project/cgruss/stack
-python -m stack.scripts.train --config configs/default.yaml
+# Pack for SCC: resize 480x360 → 224x224, strip video.mov + imu.json
+# Saves ~72% disk (2.6 GB → 717 MB for 35 sessions)
+python -m stack.scripts.pack_for_scc --data-dir data/raw --output-dir data/scc_packed
 ```
 
-Submit: `qsub train.sh`
+#### Step 2: Upload to SCC
+
+```bash
+# Upload packed tars (~717 MB for 35 sessions)
+scp data/scc_packed/*.tar cgruss@scc1.bu.edu:~/stack/data/packed/
+
+# On SCC: unpack and remove tars
+cd ~/stack/data/packed
+for t in *.tar; do tar xf "$t"; done
+rm *.tar
+```
+
+#### Step 3: Train on SCC
+
+```bash
+cd ~/stack && git pull
+qsub scripts/scc_train.sh
+# Monitors: tail -f ~/stack/outputs/train_v2.log
+# Job status: qstat -u cgruss
+```
+
+#### Step 4: Retrieve results
+
+```bash
+# Download best checkpoint
+scp cgruss@scc1.bu.edu:~/stack/outputs/real_v2/checkpoint_best.pt outputs/real_v2/
+
+# Download training log (for loss curves)
+scp cgruss@scc1.bu.edu:~/stack/outputs/train_v2.log outputs/real_v2/
+
+# Run eval locally on MacBook (MPS, ~7 min for val split)
+python -m stack.scripts.eval_viz \
+    --checkpoint outputs/real_v2/checkpoint_best.pt \
+    --data-dir data/raw \
+    --output-dir outputs/real_v2/eval \
+    --device mps --eval-stride 10 --split val
+```
+
+### Disk Budget (10 GB quota)
+
+| Item | Size | Notes |
+|------|------|-------|
+| Code (~/.git + source) | ~50 MB | |
+| Packed data (35 sessions) | ~750 MB | 224x224 JPEGs + JSON |
+| Packed data (50 sessions) | ~1.1 GB | Target dataset |
+| checkpoint_best.pt | ~183 MB | EMA + model + optimizer |
+| checkpoint_periodic.pt | ~183 MB | Every 25 epochs |
+| normalizer.pt | ~2 KB | |
+| pip --user packages | ~200 MB | diffusers, omegaconf, wandb |
+| **Total** | **~2.5 GB** | Comfortable under 10 GB |
+
+**Key rules:**
+- Never upload video.mov or imu.json to SCC
+- Use `pack_for_scc.py` to pre-resize images (72% savings)
+- `checkpoint_every: 25` (not 10) to limit checkpoint disk usage
+- Batch script auto-deletes old periodic checkpoints on launch
+- Auto-resumes from `checkpoint_best.pt` if present
+
+### Batch Script
+
+See `scripts/scc_train.sh`. Key features:
+- Auto-resumes from `checkpoint_best.pt`
+- Cleans old periodic checkpoints on launch
+- 12-hour wall clock, 1 GPU (compute capability >= 7.0)
+- Installs missing pip packages with `--user`
 
 ### Key SGE Flags
 
@@ -110,19 +153,27 @@ Submit: `qsub train.sh`
 
 Never set `CUDA_VISIBLE_DEVICES` manually — SGE handles it.
 
-## Option 2: Google Colab Pro (Immediate)
+### Gotchas
+
+- `#$ -o` doesn't expand `~` — use full path `/usr3/graduate/cgruss/...`
+- `$JOB_ID` doesn't expand in `#$ -o` directives
+- `pip install -e .` fails on shared conda env — use `PYTHONPATH` instead
+- Duo MFA required on every SSH connect — can't automate from scripts
+- `omegaconf` not in academic-ml module — must `pip install --user`
+
+## Option 2: Google Colab Pro (Backup)
 
 - BU education license available
 - A100 GPU runtimes
-- Good for first training runs while waiting for SCC
 - Session timeout after ~12-24h (even Pro)
-- Use for validating the pipeline works end-to-end
+- **Not recommended for training** — Google Drive I/O is too slow for thousands of image files
+- Use for quick experiments only
 
 ## Option 3: MacBook Pro (Local Dev)
 
-- MPS (Apple Silicon) — limited PyTorch op support
-- Use for development, debugging, tiny test runs (1-2 demos, few epochs)
-- NOT for real training
+- MPS (Apple Silicon) — ~0.5s per diffusion prediction
+- Use for: development, debugging, evaluation (eval_viz.py), COLMAP processing
+- NOT for real training (too slow)
 
 ## Links
 
