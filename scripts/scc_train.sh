@@ -37,7 +37,7 @@ fi
 
 python -m stack.scripts.train \
     --config configs/default.yaml \
-    --data-dir data/raw \
+    --data-dir data/packed \
     --output-dir outputs/real_v2 \
     --device cuda \
     --wandb \
