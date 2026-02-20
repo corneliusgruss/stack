@@ -67,15 +67,15 @@ class NormalizationStats:
         )
 
 
-def compute_normalization_stats(sessions: list[iPhoneSession]) -> NormalizationStats:
+def compute_normalization_stats(sessions: list[iPhoneSession], action_dim: int = 11) -> NormalizationStats:
     """Compute normalization statistics across all sessions."""
     all_proprio = []
     all_actions = []
 
     for session in sessions:
-        episode = session.get_episode_11d()  # (T, 11)
+        episode = session.get_episode_11d()[:, :action_dim]  # (T, action_dim)
         all_proprio.append(episode)
-        all_actions.append(episode)  # actions = proprio (both 11D)
+        all_actions.append(episode)
 
     all_proprio = np.concatenate(all_proprio, axis=0)
     all_actions = np.concatenate(all_actions, axis=0)
@@ -106,6 +106,7 @@ class StackDiffusionDataset(Dataset):
         obs_horizon: int = 2,
         action_horizon: int = 16,
         image_size: int = 224,
+        action_dim: int = 11,
         stats: NormalizationStats | None = None,
         augment: bool = False,
         random_crop: bool = False,
@@ -114,6 +115,7 @@ class StackDiffusionDataset(Dataset):
         self.obs_horizon = obs_horizon
         self.action_horizon = action_horizon
         self.image_size = image_size
+        self.action_dim = action_dim
         self.augment = augment
         self.random_crop = random_crop and augment
         self.color_jitter = color_jitter and augment
@@ -127,16 +129,16 @@ class StackDiffusionDataset(Dataset):
             except Exception as e:
                 print(f"Warning: skipping {d}: {e}")
 
-        # Preload episode data (11D proprio per frame)
+        # Preload episode data, sliced to action_dim
         self._episodes: list[np.ndarray] = []
         for s in self.sessions:
-            self._episodes.append(s.get_episode_11d())
+            self._episodes.append(s.get_episode_11d()[:, :action_dim])
 
         # Compute or use provided normalization stats
         if stats is not None:
             self.stats = stats
         else:
-            self.stats = compute_normalization_stats(self.sessions)
+            self.stats = compute_normalization_stats(self.sessions, action_dim=action_dim)
 
         # Build index: list of (episode_idx, frame_idx) for valid windows
         self._samples: list[tuple[int, int]] = []

@@ -1,0 +1,56 @@
+# Stack - 7D Ablation (pose only, no joint angles)
+# Compare against default.yaml (11D) to prove proprioception value
+
+# Policy architecture
+policy:
+  # Observation: 7 (pose only, no joints)
+  obs_dim: 7
+  image_size: 224
+
+  # Action space: 7 (pose only, no joints)
+  action_dim: 7
+  action_horizon: 16
+  prediction_horizon: 16
+  obs_horizon: 2
+
+  # Diffusion
+  num_diffusion_steps: 100
+  beta_schedule: "squaredcos_cap_v2"
+
+  # Network (same as default for fair comparison)
+  hidden_dim: 64
+  num_layers: 4
+
+  # Training
+  batch_size: 64
+  learning_rate: 1.0e-4
+  num_epochs: 100
+  freeze_backbone: true
+
+# Data
+data:
+  train_dir: "data/processed/train"
+  val_dir: "data/processed/val"
+  image_size: 224
+  random_crop: true
+  color_jitter: true
+
+# Training
+training:
+  seed: 42
+  num_workers: 4
+  gradient_clip: 1.0
+  ema_decay: 0.995
+  checkpoint_every: 25
+  eval_every: 5
+  early_stopping_patience: 10
+
+# Logging
+logging:
+  wandb:
+    enabled: false
+    project: "stack"
+    entity: null
+    log_images_every: 10
+    log_artifacts: true
+  tensorboard: true

@@ -227,6 +227,7 @@ def main():
         obs_horizon=policy_config.obs_horizon,
         action_horizon=policy_config.action_horizon,
         image_size=policy_config.image_size,
+        action_dim=policy_config.action_dim,
         augment=True,
         random_crop=random_crop,
         color_jitter=color_jitter,
@@ -236,6 +237,7 @@ def main():
         obs_horizon=policy_config.obs_horizon,
         action_horizon=policy_config.action_horizon,
         image_size=policy_config.image_size,
+        action_dim=policy_config.action_dim,
         stats=train_dataset.stats,
     )
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
