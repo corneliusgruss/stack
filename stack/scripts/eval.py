@@ -26,6 +26,11 @@ except ImportError:
 from stack.policy.diffusion import DiffusionPolicy, PolicyConfig
 from stack.data.iphone_loader import iPhoneSession
 from stack.data.training_dataset import StackDiffusionDataset, NormalizationStats
+from stack.data.transforms import (
+    compute_relative_transform,
+    relative_transform_to_13d,
+    rot6d_angular_error,
+)
 
 
 def quaternion_angular_error(q_pred: np.ndarray, q_true: np.ndarray) -> np.ndarray:
@@ -119,8 +124,17 @@ def evaluate_episode(
     from stack.data.training_dataset import IMAGENET_MEAN, IMAGENET_STD
     from PIL import Image as PILImage
 
-    episode = session.get_episode_11d()  # (T, 11)
-    T = len(episode)
+    action_dim = policy.config.action_dim
+    action_repr = getattr(policy.config, "action_repr", "absolute_quat")
+    is_relative = action_repr == "relative_6d"
+
+    if is_relative:
+        transforms = session.get_all_transforms()  # (T, 4, 4)
+        joints = session.get_aligned_encoders()     # (T, 4)
+        T = len(transforms)
+    else:
+        episode = session.get_episode_11d()[:, :action_dim]  # (T, action_dim)
+        T = len(episode)
 
     if T < obs_horizon + action_horizon:
         return {"skipped": True, "reason": "too short"}
@@ -148,33 +162,56 @@ def evaluate_episode(
             obs_images[0, i] = arr.transpose(2, 0, 1)
 
         # Build observation proprio
-        obs_proprio = episode[obs_start:obs_start + obs_horizon].copy()
+        if is_relative:
+            T_ref = transforms[t]
+            obs_proprio = np.zeros((obs_horizon, action_dim), dtype=np.float32)
+            for i in range(obs_horizon):
+                fi = obs_start + i
+                T_rel = compute_relative_transform(T_ref, transforms[fi])
+                obs_proprio[i] = relative_transform_to_13d(T_rel, joints[fi])
+        else:
+            obs_proprio = episode[obs_start:obs_start + obs_horizon].copy()
+
         obs_proprio = stats.normalize_proprio(obs_proprio)
-        obs_proprio = obs_proprio[np.newaxis]  # (1, obs_horizon, 11)
+        obs_proprio = obs_proprio[np.newaxis]  # (1, obs_horizon, D)
 
         # Predict
         images_t = torch.from_numpy(obs_images).to(device)
         proprio_t = torch.from_numpy(obs_proprio).to(device)
-        pred_actions_norm = policy.predict(images_t, proprio_t)  # (1, action_horizon, 11)
-        pred_actions_norm = pred_actions_norm.cpu().numpy()[0]  # (action_horizon, 11)
+        pred_actions_norm = policy.predict(images_t, proprio_t)
+        pred_actions_norm = pred_actions_norm.cpu().numpy()[0]  # (action_horizon, D)
 
         # Unnormalize
         pred_actions = stats.unnormalize_action(pred_actions_norm)
 
         # Ground truth actions
-        gt_actions = episode[t + 1:t + 1 + action_horizon, :11]
+        if is_relative:
+            gt_actions = np.zeros((action_horizon, action_dim), dtype=np.float32)
+            for i in range(action_horizon):
+                fi = t + 1 + i
+                T_rel = compute_relative_transform(T_ref, transforms[fi])
+                gt_actions[i] = relative_transform_to_13d(T_rel, joints[fi])
+        else:
+            gt_actions = episode[t + 1:t + 1 + action_horizon]
 
-        # Position error (first 3 dims)
+        # Position error (first 3 dims — relative or absolute)
         pos_error = np.linalg.norm(pred_actions[:, :3] - gt_actions[:, :3], axis=-1)
         all_pos_errors.append(pos_error.mean())
 
-        # Rotation error (dims 3:7, quaternion)
-        rot_error = quaternion_angular_error(pred_actions[:, 3:7], gt_actions[:, 3:7])
-        all_rot_errors.append(rot_error.mean())
-
-        # Joint error (dims 7:11)
-        joint_error = np.abs(pred_actions[:, 7:11] - gt_actions[:, 7:11])
-        all_joint_errors.append(joint_error.mean())
+        # Rotation error
+        if is_relative:
+            rot_error = rot6d_angular_error(pred_actions[:, 3:9], gt_actions[:, 3:9])
+            all_rot_errors.append(rot_error.mean())
+            joint_error = np.abs(pred_actions[:, 9:] - gt_actions[:, 9:])
+            all_joint_errors.append(joint_error.mean())
+        else:
+            rot_error = quaternion_angular_error(pred_actions[:, 3:7], gt_actions[:, 3:7])
+            all_rot_errors.append(rot_error.mean())
+            if action_dim > 7:
+                joint_error = np.abs(pred_actions[:, 7:action_dim] - gt_actions[:, 7:action_dim])
+                all_joint_errors.append(joint_error.mean())
+            else:
+                all_joint_errors.append(0.0)
 
         if return_trajectories:
             pred_actions_list.append(pred_actions)
@@ -194,9 +231,9 @@ def evaluate_episode(
     }
 
     if return_trajectories:
-        result["pred_actions_all"] = np.stack(pred_actions_list)  # (num_windows, action_horizon, 11)
-        result["gt_actions_all"] = np.stack(gt_actions_list)      # (num_windows, action_horizon, 11)
-        result["eval_indices"] = np.array(eval_indices_list)       # (num_windows,)
+        result["pred_actions_all"] = np.stack(pred_actions_list)
+        result["gt_actions_all"] = np.stack(gt_actions_list)
+        result["eval_indices"] = np.array(eval_indices_list)
 
     return result
 
@@ -232,9 +269,15 @@ def main():
         device = torch.device("cpu")
     print(f"Device: {device}")
 
-    # Load checkpoint
+    # Load checkpoint (backward compat: old checkpoints lack action_repr)
     checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    config = PolicyConfig(**checkpoint["config"])
+    ckpt_config = checkpoint["config"].copy()
+    if "action_repr" not in ckpt_config:
+        ckpt_config["action_repr"] = "absolute_quat"
+        if ckpt_config.get("obs_dim", 11) == 11:
+            ckpt_config.setdefault("obs_dim", 11)
+            ckpt_config.setdefault("action_dim", 11)
+    config = PolicyConfig(**ckpt_config)
 
     # Load EMA model if available, otherwise use regular model
     policy = DiffusionPolicy(config).to(device)

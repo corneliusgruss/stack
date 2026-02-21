@@ -11,9 +11,9 @@ Architecture (matching the paper):
   from timestep + observation embedding. Skip connections across temporal scales.
 - Diffusion: DDPM with cosine beta schedule
 
-Key dimensions:
-- Observation: 11D (pose 7D + joints 4D)
-- Action: 11D (pose 7D + joints 4D)
+Key dimensions (relative_6d mode):
+- Observation: 13D (rel pos 3D + rot6d 6D + joints 4D)
+- Action: 13D (rel pos 3D + rot6d 6D + joints 4D)
 - Action horizon: 16 timesteps predicted per chunk
 - Obs horizon: 2 past frames conditioned on
 """
@@ -40,11 +40,12 @@ class PolicyConfig:
     """Configuration for diffusion policy."""
 
     # Observation
-    obs_dim: int = 11  # 7 (pose) + 4 (joints)
+    obs_dim: int = 13  # 3 (rel pos) + 6 (rot6d) + 4 (joints)
     image_size: int = 224
 
     # Action
-    action_dim: int = 11  # 7 (pose) + 4 (joints)
+    action_dim: int = 13  # 3 (rel pos) + 6 (rot6d) + 4 (joints)
+    action_repr: str = "relative_6d"  # "relative_6d" or "absolute_quat"
     action_horizon: int = 16  # Predict this many future steps
     obs_horizon: int = 2  # Condition on this many past obs
 

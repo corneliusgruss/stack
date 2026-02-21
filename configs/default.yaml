@@ -2,12 +2,13 @@
 
 # Policy architecture
 policy:
-  # Observation: 7 (pose) + 4 (joints) = 11
-  obs_dim: 11
+  # Observation: 3 (rel pos) + 6 (rot6d) + 4 (joints) = 13
+  obs_dim: 13
   image_size: 224
 
-  # Action space: 7 (pose) + 4 (joints) = 11
-  action_dim: 11
+  # Action space: 3 (rel pos) + 6 (rot6d) + 4 (joints) = 13
+  action_dim: 13
+  action_repr: "relative_6d"  # "relative_6d" or "absolute_quat"
   action_horizon: 16   # Predict 16 future timesteps
   prediction_horizon: 16
   obs_horizon: 2       # Condition on 2 past observations

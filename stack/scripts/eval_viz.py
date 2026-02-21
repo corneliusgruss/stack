@@ -82,9 +82,15 @@ def main():
         device = torch.device("cpu")
     print(f"Device: {device}")
 
-    # Load checkpoint
+    # Load checkpoint (backward compat: old checkpoints lack action_repr)
     checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    config = PolicyConfig(**checkpoint["config"])
+    ckpt_config = checkpoint["config"].copy()
+    if "action_repr" not in ckpt_config:
+        ckpt_config["action_repr"] = "absolute_quat"
+        if ckpt_config.get("obs_dim", 11) == 11:
+            ckpt_config.setdefault("obs_dim", 11)
+            ckpt_config.setdefault("action_dim", 11)
+    config = PolicyConfig(**ckpt_config)
 
     policy = DiffusionPolicy(config).to(device)
     if "ema_model" in checkpoint:
@@ -180,8 +186,12 @@ def main():
         # 1-step predictions (first action of each chunk)
         pred_pos = result["pred_actions_all"][:, 0, :3]
         gt_pos = result["gt_actions_all"][:, 0, :3]
-        pred_joints = result["pred_actions_all"][:, 0, 7:11]
-        gt_joints = result["gt_actions_all"][:, 0, 7:11]
+        action_dim = result["pred_actions_all"].shape[-1]
+        action_repr = getattr(config, "action_repr", "absolute_quat")
+        joint_start = 9 if action_repr == "relative_6d" else 7
+        pred_joints = result["pred_actions_all"][:, 0, joint_start:action_dim]
+        gt_joints = result["gt_actions_all"][:, 0, joint_start:action_dim]
+        has_joints = pred_joints.shape[1] > 0
         eval_idx = result["eval_indices"]
 
         # 3D trajectory
@@ -203,13 +213,14 @@ def main():
         )
         plt.close(fig)
 
-        # Joints over time
-        fig = plot_joints_over_time(
-            pred_joints, gt_joints, eval_idx,
-            title=f"Joints: {name}",
-            save_path=str(session_out / "joints_over_time.png"),
-        )
-        plt.close(fig)
+        # Joints over time (skip for 7D ablation)
+        if has_joints:
+            fig = plot_joints_over_time(
+                pred_joints, gt_joints, eval_idx,
+                title=f"Joints: {name}",
+                save_path=str(session_out / "joints_over_time.png"),
+            )
+            plt.close(fig)
 
         # Video overlay (optional)
         if args.video:

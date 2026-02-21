@@ -4,7 +4,8 @@ Load capture sessions from StackCapture app.
 Supports both ARKit sessions (poses from Apple) and raw/ultrawide sessions
 (poses from COLMAP SfM offline processing).
 
-Episode format: 11D = pose (7) + joints (4)
+Episode format: 11D absolute = pose (7) + joints (4)
+                13D relative = rel_pos (3) + rot6d (6) + joints (4)
 
 Session format (v3 — camera-agnostic):
     session_YYYY-MM-DD_HHMMSS/
@@ -194,6 +195,13 @@ class SessionLoader:
         for i in range(self.num_poses):
             poses[i] = self.get_pose_7d(i)
         return poses
+
+    def get_all_transforms(self) -> np.ndarray:
+        """Get all 4x4 pose transforms as (T, 4, 4) array."""
+        transforms = np.zeros((self.num_poses, 4, 4), dtype=np.float32)
+        for i in range(self.num_poses):
+            transforms[i] = self.get_pose_transform(i)
+        return transforms
 
     def get_encoder_timestamps(self) -> np.ndarray:
         """Get encoder timestamps (T_enc,) in seconds since epoch."""

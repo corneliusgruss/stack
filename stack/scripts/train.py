@@ -90,6 +90,7 @@ def log_sample_predictions(
     device: torch.device,
     global_step: int,
     num_samples: int = 4,
+    config: PolicyConfig | None = None,
 ):
     """Run DDPM inference on random val samples and log predicted vs GT action plots."""
     import matplotlib
@@ -104,15 +105,20 @@ def log_sample_predictions(
     if num_samples == 1:
         axes = axes[np.newaxis, :]
 
-    dim_labels = ["Position (XYZ)", "Rotation (quat)", "Joints"]
-    dim_slices = [slice(0, 3), slice(3, 7), slice(7, 11)]
+    action_repr = getattr(config, "action_repr", "absolute_quat") if config else "absolute_quat"
+    if action_repr == "relative_6d":
+        dim_labels = ["Rel Position", "6D Rotation", "Joints"]
+        dim_slices = [slice(0, 3), slice(3, 9), slice(9, 13)]
+    else:
+        dim_labels = ["Position (XYZ)", "Rotation (quat)", "Joints"]
+        dim_slices = [slice(0, 3), slice(3, 7), slice(7, 11)]
 
     for row, idx in enumerate(indices):
         images, proprio, actions = val_dataset[idx]
         images_t = images.unsqueeze(0).to(device)
         proprio_t = proprio.unsqueeze(0).to(device)
 
-        pred_norm = policy.predict(images_t, proprio_t).cpu().numpy()[0]  # (action_horizon, 11)
+        pred_norm = policy.predict(images_t, proprio_t).cpu().numpy()[0]  # (action_horizon, D)
         pred = stats.unnormalize_action(pred_norm)
         gt = stats.unnormalize_action(actions.numpy())
 
@@ -222,12 +228,14 @@ def main():
     print(f"Train: {n_train} sessions, Val: {n_val} sessions")
 
     # Create datasets
+    action_repr = getattr(policy_config, "action_repr", "absolute_quat")
     train_dataset = StackDiffusionDataset(
         train_dirs,
         obs_horizon=policy_config.obs_horizon,
         action_horizon=policy_config.action_horizon,
         image_size=policy_config.image_size,
         action_dim=policy_config.action_dim,
+        action_repr=action_repr,
         augment=True,
         random_crop=random_crop,
         color_jitter=color_jitter,
@@ -238,6 +246,7 @@ def main():
         action_horizon=policy_config.action_horizon,
         image_size=policy_config.image_size,
         action_dim=policy_config.action_dim,
+        action_repr=action_repr,
         stats=train_dataset.stats,
     )
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
@@ -414,7 +423,7 @@ def main():
             if use_wandb and log_images_every > 0 and (epoch + 1) % log_images_every == 0:
                 log_sample_predictions(
                     ema_policy, val_dataset, train_dataset.stats,
-                    device, global_step,
+                    device, global_step, config=policy_config,
                 )
 
             if val_loss < best_val_loss:
